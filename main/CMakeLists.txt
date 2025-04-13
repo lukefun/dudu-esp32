@@ -17,10 +17,16 @@ set(SOURCES "audio_codecs/audio_codec.cc"
             "ota.cc"
             "settings.cc"
             "background_task.cc"
+            "ble_config/ble_config.cc"  # <--- BLE 配网
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "audio_codecs" "protocols" "audio_processing")
+set(INCLUDE_DIRS "." 
+                 "display" 
+                 "audio_codecs" 
+                 "protocols" 
+                 "audio_processing"
+                 "ble_config") # <--- BLE 配网
 
 # 添加 IOT 相关文件
 file(GLOB IOT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/iot/things/*.cc)
