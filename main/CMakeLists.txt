@@ -21,12 +21,16 @@ set(SOURCES "audio_codecs/audio_codec.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." 
+# 将反斜杠全部替换为正斜杠
+string(REGEX REPLACE "\\\\" "/" NIMBLE_INCLUDE_PATH "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble/host/include")
+set(INCLUDE_DIRS "."
                  "display" 
                  "audio_codecs" 
                  "protocols" 
                  "audio_processing"
-                 "ble_config") # <--- BLE 配网
+                 "ble_config"
+                 "${NIMBLE_INCLUDE_PATH}"  # 使用处理后的路径
+                 )
 
 # 添加 IOT 相关文件
 file(GLOB IOT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/iot/things/*.cc)
@@ -192,6 +196,11 @@ endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
+                    REQUIRES
+                        bt 
+                        esp_app_format 
+                        esp-opus-encoder
+                        app_update  # 添加OTA支持
                     WHOLE_ARCHIVE
                     )
 
