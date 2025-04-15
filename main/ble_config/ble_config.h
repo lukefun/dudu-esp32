@@ -4,8 +4,11 @@
 #include <string>
 #include <functional>
 #include "host/ble_hs.h" // NimBLE 头文件
+#include "nimble/nimble_port.h"
+#include "host/ble_uuid.h"  // 确保ble_uuid_any_t定义可见
+#include "host/ble_gap.h"   // 确保ble_gap_event_listener定义完整
 
-// 定义我们之前设计的 UUID (你可以替换成你自己生成的)
+// 定义我们之前设计的 UUID
 #define WIFI_CONFIG_SERVICE_UUID      "CDB7950D-73F1-4D4D-8E47-C090502DBD63"
 #define SSID_CHAR_UUID                "CDB7950D-73F1-4D4D-8E47-C090502DBD64"
 #define PASSWORD_CHAR_UUID            "CDB7950D-73F1-4D4D-8E47-C090502DBD65"
@@ -23,6 +26,7 @@ typedef enum {
 
 // 定义控制命令码 (从手机接收)
 #define WIFI_CONTROL_CMD_CONNECT 0xFF
+
 
 class BleConfig {
 public:
@@ -54,32 +58,32 @@ public:
     // 设置开始连接 Wi-Fi 的回调函数
     void SetConnectWifiCallback(std::function<void()> cb);
 
+    // --- 公开给静态回调函数访问的成员 ---
+    std::string received_ssid_;
+    std::string received_password_;
+    uint16_t conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+    uint16_t status_val_handle_ = 0; // Status Characteristic Value Handle
+    std::function<void(const std::string& ssid, const std::string& password)> credentials_received_cb_ = nullptr;
+    std::function<void()> connect_wifi_cb_ = nullptr;
 
-private:
-    BleConfig() = default; // 私有构造函数
-    ~BleConfig() = default; // 私有析构函数
-
-    // 内部回调函数和变量
+    // --- 静态回调函数 ---
     static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                    struct ble_gatt_access_ctxt *ctxt, void *arg);
-    static int gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg);
+    static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg);
     static void gatt_svr_init(void);
     static void ble_advertise(void);
     static void ble_on_sync(void);
     static void ble_on_reset(int reason);
     static void ble_host_task(void *param);
+    static int ble_gap_event(struct ble_gap_event *event, void *arg);
 
-    // 存储接收到的 SSID 和密码
-    std::string received_ssid_;
-    std::string received_password_;
 
-    // 存储连接句柄和状态特征值的句柄，用于发送通知
-    uint16_t conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
-    uint16_t status_val_handle_ = 0; // Status Characteristic Value Handle
-
-    // 回调函数指针
-    std::function<void(const std::string& ssid, const std::string& password)> credentials_received_cb_ = nullptr;
-    std::function<void()> connect_wifi_cb_ = nullptr;
+private:
+    BleConfig() = default;
+    ~BleConfig() = default;
 };
+
+// 声明外部存储回调函数（如果需要持久化绑定信息）
+// extern "C" void ble_store_config_init(void);
 
 #endif // BLE_CONFIG_H
