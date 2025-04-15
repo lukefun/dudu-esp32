@@ -20,6 +20,8 @@
 #include "ota.h"
 #include "background_task.h"
 
+#include "ble_config/ble_config.h"  // [新增] 添加BLE配置头文件
+
 #if CONFIG_USE_WAKE_WORD_DETECT
 #include "wake_word_detect.h"
 #endif

@@ -1,11 +1,12 @@
 #include "wifi_board.h"
 
 #include "display.h"
-#include "application.h"
+#include "application.h"    // <--- 包含 Application 头文件
 #include "system_info.h"
 #include "font_awesome_symbols.h"
 #include "settings.h"
-#include "assets/lang_config.h"
+#include "assets/lang_config.h" // <--- 包含语言配置头文件
+#include "board.h"              // <--- 包含 Board 头文件
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -21,7 +22,7 @@
 #include <wifi_configuration_ap.h>
 #include <ssid_manager.h>
 
-static const char *TAG = "WifiBoard";
+static const char *TAG = "WifiBoard";    // <--- 确保 TAG 已定义
 
 WifiBoard::WifiBoard() {
     Settings settings("wifi", true);
@@ -65,8 +66,13 @@ void WifiBoard::EnterWifiConfigMode() {
 }
 
 void WifiBoard::StartNetwork() {
+
+    auto& application = Application::GetInstance(); // <--- 获取 Application 实例
+    // auto display = Board::GetInstance().GetDisplay(); // <--- 获取 Display 实例:后面没有按照AI的指导来改，有可能多余了，先留着。
+    
     // User can press BOOT button while starting to enter WiFi configuration mode
     if (wifi_config_mode_) {
+        // 如果是强制进入AP模式，这里可能不需要播放提示音，直接进入配网
         EnterWifiConfigMode();
         return;
     }
@@ -75,9 +81,18 @@ void WifiBoard::StartNetwork() {
     auto& ssid_manager = SsidManager::GetInstance();
     auto ssid_list = ssid_manager.GetSsidList();
     if (ssid_list.empty()) {
-        wifi_config_mode_ = true;
-        EnterWifiConfigMode();
-        return;
+        // --- 新增代码 开始 ---
+        ESP_LOGI(TAG, "未找到Wi-Fi凭据。正在播放蓝牙低功耗（BLE）配置提示音。 No Wi-Fi credentials found. Playing BLE config prompt.");
+        // 播放配网提示音 - 确保只在首次未配置时播放
+        // 注意：PlaySound 是阻塞的，如果希望不阻塞启动流程，需要异步处理或放到后台任务
+        // 这里假设 PlaySound 可以接受 std::string_view
+        application.PlaySound(Lang::Sounds::P3_WIFI_CONFIG_REQUIRED); // <--- 播放你的音频文件引用
+        vTaskDelay(pdMS_TO_TICKS(500)); // 等待一小段时间，确保音频开始播放
+        // --- 新增代码 结束 ---
+
+        wifi_config_mode_ = true;   // 标记需要进入配网模式
+        EnterWifiConfigMode();      // 进入（可能是SoftAP或后续改为BLE的）配网模式
+        return;                     // 进入配网后不再继续尝试连接
     }
 
     auto& wifi_station = WifiStation::GetInstance();
@@ -102,11 +117,16 @@ void WifiBoard::StartNetwork() {
 
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
     if (!wifi_station.WaitForConnected(60 * 1000)) {
+        // --- 连接失败逻辑 ---
+        // 这里可以添加播放连接失败的提示音（如果需要）
+         ESP_LOGW(TAG, "无法连接到无线网络。正在进入配置模式。 Failed to connect to Wi-Fi. Entering config mode.");
         wifi_station.Stop();
         wifi_config_mode_ = true;
         EnterWifiConfigMode();
         return;
     }
+    // --- 连接成功，正常启动 ---
+    ESP_LOGI(TAG, "Wi-Fi connected successfully.");
 }
 
 Http* WifiBoard::CreateHttp() {
