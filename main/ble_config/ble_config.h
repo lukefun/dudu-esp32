@@ -3,6 +3,7 @@
 
 #include <string>
 #include <functional>
+#include <stdint.h>  // 新增，保证uint16_t等类型可用
 #include "host/ble_hs.h" // NimBLE 头文件
 #include "nimble/nimble_port.h"
 #include "host/ble_uuid.h"  // 确保ble_uuid_any_t定义可见
@@ -84,6 +85,6 @@ private:
 };
 
 // 声明外部存储回调函数（如果需要持久化绑定信息）
-// extern "C" void ble_store_config_init(void);
+ extern "C" void ble_store_config_init(void);
 
 #endif // BLE_CONFIG_H
