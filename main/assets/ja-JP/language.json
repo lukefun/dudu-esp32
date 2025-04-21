@@ -34,6 +34,9 @@
         "ENTERING_WIFI_CONFIG_MODE": "ネットワーク設定中...",
         "SCANNING_WIFI": "Wi-Fiをスキャン中...",
 
+        "CONNECT_TO_BLE": "ブルートゥース機器を接続する：",
+        "BLE_CONFIG_MODE": "Bluetooth ネットワーク設定モード",
+
         "NEW_VERSION": "新しいバージョン ",
         "OTA_UPGRADE": "OTAアップグレード",
         "UPGRADING": "システムをアップグレード中...",

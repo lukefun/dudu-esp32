@@ -35,6 +35,9 @@
         "ENTERING_WIFI_CONFIG_MODE": "Entering Wi-Fi configuration mode...",
         "SCANNING_WIFI": "Scanning Wi-Fi...",
 
+        "CONNECT_TO_BLE": "Connect to BLE device: ",
+        "BLE_CONFIG_MODE": "BLE Wi-Fi Configuration Mode",
+
         "NEW_VERSION": "New version ",
         "OTA_UPGRADE": "OTA Upgrade",
         "UPGRADING": "System is upgrading...",

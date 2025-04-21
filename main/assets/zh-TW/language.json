@@ -34,6 +34,9 @@
         "ENTERING_WIFI_CONFIG_MODE": "正在設定網路...",
         "SCANNING_WIFI": "掃描 Wi-Fi...",
 
+        "CONNECT_TO_BLE": "連接藍牙設備：",
+        "BLE_CONFIG_MODE": "藍牙配網模式",
+
         "NEW_VERSION": "新版本 ",
         "OTA_UPGRADE": "OTA 升級",
         "UPGRADING": "正在升級系統...",
