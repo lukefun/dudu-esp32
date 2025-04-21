@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <assert.h>
 
+
 static const char* TAG = "BLE_CONFIG";
 
 static BleConfig* g_ble_config_instance = nullptr;
@@ -48,15 +49,38 @@ static void parse_all_uuids() {
 
     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_svc_wifi_config_uuid.u, WIFI_CONFIG_SERVICE_UUID);
     assert(rc == 0);
+    ESP_LOGI(TAG, "服务UUID: %s", WIFI_CONFIG_SERVICE_UUID);
+    
     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_chr_ssid_uuid.u, SSID_CHAR_UUID);
     assert(rc == 0);
+    ESP_LOGI(TAG, "SSID特征UUID: %s", SSID_CHAR_UUID);
+    
     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_chr_password_uuid.u, PASSWORD_CHAR_UUID);
     assert(rc == 0);
+    ESP_LOGI(TAG, "密码特征UUID: %s", PASSWORD_CHAR_UUID);
+    
     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_chr_control_status_uuid.u, CONTROL_STATUS_CHAR_UUID);
     assert(rc == 0);
+    ESP_LOGI(TAG, "控制状态特征UUID: %s", CONTROL_STATUS_CHAR_UUID);
     
     ESP_LOGI(TAG, "UUID解析完成");
 }
+
+// static void parse_all_uuids() {
+//     int rc;
+//     ESP_LOGI(TAG, "开始解析UUID...");
+
+//     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_svc_wifi_config_uuid.u, WIFI_CONFIG_SERVICE_UUID);
+//     assert(rc == 0);
+//     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_chr_ssid_uuid.u, SSID_CHAR_UUID);
+//     assert(rc == 0);
+//     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_chr_password_uuid.u, PASSWORD_CHAR_UUID);
+//     assert(rc == 0);
+//     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_chr_control_status_uuid.u, CONTROL_STATUS_CHAR_UUID);
+//     assert(rc == 0);
+    
+//     ESP_LOGI(TAG, "UUID解析完成");
+// }
 
 static const struct ble_gatt_chr_def gatt_svr_characteristics[] = {
     // SSID特征值
@@ -144,7 +168,7 @@ void BleConfig::Initialize() {
 
     esp_err_t ret = nvs_flash_init();   // 初始化NVS
 
-    // 检查NVS是否需要擦除(在使用非易失性存储（NVS）时没有可用的空闲页面。|| 新的NVS版本可用
+    // 检查NVS是否需要擦除
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS需要擦除: %s", ret == ESP_ERR_NVS_NO_FREE_PAGES ? "无可用页面" : "新版本");
         ESP_ERROR_CHECK(nvs_flash_erase()); // 擦除NVS
@@ -156,7 +180,7 @@ void BleConfig::Initialize() {
     // 2. GATT服务配置
     ESP_LOGI(TAG, "配置GATT服务...");
     parse_all_uuids();
-    
+        
     // 3. Host初始化
     ESP_LOGI(TAG, "初始化NimBLE主机...");
     nimble_port_init();         // 初始化NimBLE主机
@@ -205,13 +229,22 @@ void BleConfig::Initialize() {
     gatt_svr_init();
 
     ESP_LOGI(TAG, "设置BLE设备名称...");
-    rc = ble_svc_gap_device_name_set("DuDu-BLE配网");
+    rc = ble_svc_gap_device_name_set("DuDu-BLE");
     if (rc == 0) {
-        ESP_LOGI(TAG, "BLE设备名称设置成功: DuDu-BLE配网");
+        ESP_LOGI(TAG, "BLE设备名称设置成功: DuDu-BLE");
     } else {
         ESP_LOGE(TAG, "BLE设备名称设置失败: %d", rc);
     }
     assert(rc == 0);
+
+    // ESP_LOGI(TAG, "设置BLE设备名称...");
+    // rc = ble_svc_gap_device_name_set("DuDu-BLE配网");
+    // if (rc == 0) {
+    //     ESP_LOGI(TAG, "BLE设备名称设置成功: DuDu-BLE配网");
+    // } else {
+    //     ESP_LOGE(TAG, "BLE设备名称设置失败: %d", rc);
+    // }
+    // assert(rc == 0);
 
     // 4. Host任务启动
     ESP_LOGI(TAG, "启动NimBLE主机任务...");
@@ -335,33 +368,70 @@ void BleConfig::ble_advertise(void) {
     struct ble_gap_adv_params adv_params;   // 广播参数
     struct ble_hs_adv_fields fields;        // 广播字段
     
-    memset(&fields, 0, sizeof fields);      // 清空广播字段
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;    // 广播类型
-    fields.tx_pwr_lvl_is_present = 1;                                   // 广播功率
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;                     // 广播功率 (自动)
-    fields.name = (uint8_t *)ble_svc_gap_device_name();                 // 广播名称
-    fields.name_len = strlen(ble_svc_gap_device_name());                // 广播名称长度
-    fields.name_is_complete = 1;                                        // 广播名称是否完整
-    fields.uuids128 = &gatt_svr_svc_wifi_config_uuid;                   // 广播UUID
-    fields.num_uuids128 = 1;                                            // 广播UUID数量
-    fields.uuids128_is_complete = 1;                                    // 广播UUID是否完整
-
-    ESP_LOGI(TAG, "设置广播字段，设备名称: %s, 名称长度: %d", ble_svc_gap_device_name(), fields.name_len);
+    // 清空并设置广播字段
+    memset(&fields, 0, sizeof fields);
+    
+    // 简化广播数据，只包含必要信息
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.tx_pwr_lvl_is_present = 1;
+    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+    
+    // 设置设备名称
+    const char* dev_name = ble_svc_gap_device_name();
+    fields.name = (uint8_t *)dev_name;
+    fields.name_len = strlen(dev_name);
+    fields.name_is_complete = 1;
+    
+    // 不在广播数据中包含UUID，改为在扫描响应中包含
+    ESP_LOGI(TAG, "设置广播字段，设备名称: %s, 名称长度: %d", dev_name, fields.name_len);
 
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "设置广播字段失败: %d", rc);
-        return;
-    } else {
-        ESP_LOGI(TAG, "广播字段设置成功");
+        
+        // 尝试更简化的广播数据
+        memset(&fields, 0, sizeof fields);
+        fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+        fields.name = (uint8_t *)dev_name;
+        fields.name_len = strlen(dev_name);
+        fields.name_is_complete = 1;
+        
+        rc = ble_gap_adv_set_fields(&fields);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "简化广播字段设置也失败: %d，尝试最小配置", rc);
+            
+            // 最小配置
+            memset(&fields, 0, sizeof fields);
+            fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+            
+            rc = ble_gap_adv_set_fields(&fields);
+            if (rc != 0) {
+                ESP_LOGE(TAG, "最小广播字段设置失败: %d，无法启动广播", rc);
+                return;
+            }
+        }
+    }
+    
+    // 设置扫描响应数据，包含UUID
+    struct ble_hs_adv_fields rsp_fields;
+    memset(&rsp_fields, 0, sizeof rsp_fields);
+    
+    // 在扫描响应中包含UUID和设备名称
+    rsp_fields.uuids128 = &gatt_svr_svc_wifi_config_uuid;
+    rsp_fields.num_uuids128 = 1;
+    rsp_fields.uuids128_is_complete = 1;
+    
+    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "设置扫描响应字段失败: %d，将只使用基本广播", rc);
     }
 
-    // 增加广播功率和降低广播间隔以提高可发现性
-    memset(&adv_params, 0, sizeof adv_params);                  // 清空广播参数
-    adv_params.itvl_min = BLE_GAP_ADV_FAST_INTERVAL_MIN1 / 2;   // 降低间隔提高发现率
-    adv_params.itvl_max = BLE_GAP_ADV_FAST_INTERVAL_MAX1 / 2;   // 降低间隔提高发现率
-    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;               // 连接模式
-    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;               // 发现模式
+    // 广播参数设置
+    memset(&adv_params, 0, sizeof adv_params);
+    adv_params.itvl_min = BLE_GAP_ADV_FAST_INTERVAL_MIN1 / 2;
+    adv_params.itvl_max = BLE_GAP_ADV_FAST_INTERVAL_MAX1 / 2;
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
     ESP_LOGI(TAG, "开始广播，间隔: %d-%d (单位: 0.625ms)", adv_params.itvl_min, adv_params.itvl_max);
 
@@ -370,11 +440,70 @@ void BleConfig::ble_advertise(void) {
                         &adv_params, ble_gap_event, NULL);
 
     if (rc == 0) {
-        ESP_LOGI(TAG, "BLE广播已成功启动，设备名称: %s", ble_svc_gap_device_name());
+        ESP_LOGI(TAG, "BLE广播已成功启动，设备名称: %s", dev_name);
     } else {
         ESP_LOGE(TAG, "启动BLE广播失败: %d", rc);
     }
 }
+
+// void BleConfig::ble_advertise(void) {
+//     ESP_LOGI(TAG, "准备开始BLE广播...");
+//     struct ble_gap_adv_params adv_params;   // 广播参数
+//     struct ble_hs_adv_fields fields;        // 广播字段
+    
+//     // 清空并设置广播字段
+//     memset(&fields, 0, sizeof fields);      // 清空广播字段
+
+//     // 简化广播数据，只包含必要信息    
+//     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;    // 广播类型
+//     fields.tx_pwr_lvl_is_present = 1;                                   // 广播功率
+//     fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;                     // 广播功率 (自动)
+    
+//     // 设置设备名称
+//     const char* dev_name = ble_svc_gap_device_name();
+//     fields.name = (uint8_t *)dev_name;
+//     fields.name_len = strlen(dev_name);
+//     fields.name_is_complete = 1;
+
+//     // 不在广播数据中包含UUID，改为在扫描响应中包含
+//     ESP_LOGI(TAG, "设置广播字段，设备名称: %s, 名称长度: %d", dev_name, fields.name_len);
+
+//     // fields.name = (uint8_t *)ble_svc_gap_device_name();                 // 广播名称
+//     // fields.name_len = strlen(ble_svc_gap_device_name());                // 广播名称长度
+//     // fields.name_is_complete = 1;                                        // 广播名称是否完整
+//     // fields.uuids128 = &gatt_svr_svc_wifi_config_uuid;                   // 广播UUID
+//     // fields.num_uuids128 = 1;                                            // 广播UUID数量
+//     // fields.uuids128_is_complete = 1;                                    // 广播UUID是否完整
+
+//     // ESP_LOGI(TAG, "设置广播字段，设备名称: %s, 名称长度: %d", ble_svc_gap_device_name(), fields.name_len);
+
+//     int rc = ble_gap_adv_set_fields(&fields);
+//     if (rc != 0) {
+//         ESP_LOGE(TAG, "设置广播字段失败: %d", rc);
+//         return;
+//     } else {
+//         ESP_LOGI(TAG, "广播字段设置成功");
+//     }
+
+//     // 增加广播功率和降低广播间隔以提高可发现性
+//     memset(&adv_params, 0, sizeof adv_params);                  // 清空广播参数
+//     adv_params.itvl_min = BLE_GAP_ADV_FAST_INTERVAL_MIN1 / 2;   // 降低间隔提高发现率
+//     adv_params.itvl_max = BLE_GAP_ADV_FAST_INTERVAL_MAX1 / 2;   // 降低间隔提高发现率
+//     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;               // 连接模式
+//     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;               // 发现模式
+
+//     ESP_LOGI(TAG, "开始广播，间隔: %d-%d (单位: 0.625ms)", adv_params.itvl_min, adv_params.itvl_max);
+
+//     // 开始广播
+//     rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
+//                         &adv_params, ble_gap_event, NULL);
+
+//     if (rc == 0) {
+//         ESP_LOGI(TAG, "BLE广播已成功启动，设备名称: %s", ble_svc_gap_device_name());
+//     } else {
+//         ESP_LOGE(TAG, "启动BLE广播失败: %d", rc);
+//     }
+// }
 
 void BleConfig::StartAdvertising() {
     ESP_LOGI(TAG, "尝试开始BLE广播...");
