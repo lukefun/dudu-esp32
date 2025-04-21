@@ -537,8 +537,7 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        ESP_LOGI(TAG, "BLE广播完成事件 - 实例: %d, 状态: %d", 
-                event->adv_complete.instance, event->adv_complete.reason);
+        ESP_LOGI(TAG, "BLE广播完成事件 - 状态: %d", event->adv_complete.reason);
         return 0;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
