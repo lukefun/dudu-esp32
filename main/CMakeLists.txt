@@ -18,19 +18,48 @@ set(SOURCES "audio_codecs/audio_codec.cc"
             "settings.cc"
             "background_task.cc"
             "ble_config/ble_config.cc"  # <--- BLE 配网
+            # "ble_config/ble_hs_mbuf_to_flat.c"   # <-- 新增
             "main.cc"
             )
 
-# 将反斜杠全部替换为正斜杠
-string(REGEX REPLACE "\\\\" "/" NIMBLE_INCLUDE_PATH "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble/host/include")
-set(INCLUDE_DIRS "."
-                 "display" 
-                 "audio_codecs" 
-                 "protocols" 
-                 "audio_processing"
-                 "ble_config"
-                 "${NIMBLE_INCLUDE_PATH}"  # 使用处理后的路径
-                 )
+string(REGEX REPLACE "\\\\" "/" NIMBLE_BASE "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble")
+string(REGEX REPLACE "\\\\" "/" NIMBLE_PORT "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/porting/nimble/include")
+string(REGEX REPLACE "\\\\" "/" NIMBLE_PORT_FREERTOS "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/porting/npl/freertos/include")
+string(REGEX REPLACE "\\\\" "/" NIMBLE_PORT_ROOT "$ENV{IDF_PATH}/components/bt/host/nimble/port/include")
+string(REGEX REPLACE "\\\\" "/" NIMBLE_TRANSPORT "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble/transport/include")
+
+message(STATUS "NIMBLE_TRANSPORT = ${NIMBLE_TRANSPORT}")
+
+# 定义所有可能的 NimBLE 头文件目录
+set(NIMBLE_INCLUDE_CANDIDATES
+    "${NIMBLE_BASE}/include"
+    "${NIMBLE_BASE}/host/include"
+    "${NIMBLE_BASE}/host/util/include"
+    "${NIMBLE_BASE}/host/services/gap/include"
+    "${NIMBLE_BASE}/host/services/gatt/include"
+    "${NIMBLE_PORT}"
+    "${NIMBLE_PORT_FREERTOS}"
+    "${NIMBLE_PORT_ROOT}"
+    "${NIMBLE_TRANSPORT}"   # <--- 新增这一行
+)
+
+# 先设置基础 include 路径
+set(INCLUDE_DIRS
+    "."
+    "display"
+    "audio_codecs"
+    "protocols"
+    "audio_processing"
+    "ble_config"
+    "D:/tools/Espressif/frameworks/esp-idf-v5.3.2/components/bt/host/nimble/nimble/nimble/transport/include" 
+)
+
+# 只添加存在的 NimBLE 目录
+foreach(DIR ${NIMBLE_INCLUDE_CANDIDATES})
+    if(EXISTS ${DIR})
+        list(APPEND INCLUDE_DIRS ${DIR})
+    endif()
+endforeach()
 
 # 添加 IOT 相关文件
 file(GLOB IOT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/iot/things/*.cc)
@@ -201,6 +230,9 @@ idf_component_register(SRCS ${SOURCES}
                         esp_app_format 
                         esp-opus-encoder
                         app_update  # 添加OTA支持
+                        nvs_flash   # 实际用到
+                        log         # 实际用到
+                        efuse       # 实际用到
                     WHOLE_ARCHIVE
                     )
 
