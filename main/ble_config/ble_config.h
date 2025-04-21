@@ -45,7 +45,7 @@ public:
     void Initialize();
 
     // 开始 BLE 广播 (当设备未配网时调用)
-    void StartAdvertising();
+    bool StartAdvertising(); // 修改返回类型为 bool
 
     // 停止 BLE 广播 (配网成功或不需要时调用)
     void StopAdvertising();

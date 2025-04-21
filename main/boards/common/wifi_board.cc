@@ -94,7 +94,13 @@ void WifiBoard::EnterWifiConfigMode() {
     
     // 开始广播
     ESP_LOGI(TAG, "开始 BLE 广播");
-    ble_config.StartAdvertising();
+
+    if (!ble_config.StartAdvertising()) {
+        ESP_LOGE(TAG, "BLE广播启动失败");
+        // 如果有 Lang::Sounds::P3_ERROR 就用，否则用 ""
+        application.Alert("蓝牙配网启动失败", "请重启设备", "", Lang::Sounds::P3_ERR_PIN); // 临时替代一下
+        return;
+    }
     ESP_LOGI(TAG, "BLE 配网已启动，等待连接...");
 
     // 显示 BLE 配网提示
@@ -104,7 +110,7 @@ void WifiBoard::EnterWifiConfigMode() {
         ESP_LOGW(TAG, "未找到 CONNECT_TO_BLE 字符串，使用默认提示");
         hint = "请使用支持BLE的手机App扫描并连接设备：";
     }
-    hint += "DuDu-BLE配网";  // 使用BLE设备名称
+    hint += "DuDu-BLE";  // 使用BLE设备名称
     ESP_LOGI(TAG, "配网提示: %s", hint.c_str());
     
     // 播报配置 WiFi 的提示
