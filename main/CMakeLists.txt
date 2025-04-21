@@ -51,7 +51,7 @@ set(INCLUDE_DIRS
     "protocols"
     "audio_processing"
     "ble_config"
-    "D:/tools/Espressif/frameworks/esp-idf-v5.3.2/components/bt/host/nimble/nimble/nimble/transport/include" 
+    #"D:/tools/Espressif/frameworks/esp-idf-v5.3.2/components/bt/host/nimble/nimble/nimble/transport/include" 
 )
 
 # 只添加存在的 NimBLE 目录
@@ -59,6 +59,12 @@ foreach(DIR ${NIMBLE_INCLUDE_CANDIDATES})
     if(EXISTS ${DIR})
         list(APPEND INCLUDE_DIRS ${DIR})
     endif()
+endforeach()
+
+# 在这里添加调试信息
+message(STATUS "最终包含目录:")
+foreach(DIR ${INCLUDE_DIRS})
+    message(STATUS "  - ${DIR}")
 endforeach()
 
 # 添加 IOT 相关文件
