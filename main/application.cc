@@ -775,6 +775,7 @@ void Application::SetListeningMode(ListeningMode mode) {
     SetDeviceState(kDeviceStateListening);
 }
 
+// 设置设备状态并更新用户界面
 void Application::SetDeviceState(DeviceState state) {
     if (device_state_ == state) {
         return;

@@ -237,9 +237,10 @@ void BleConfig::Initialize() {
 
     // 4. Host任务启动 - 增加栈大小以防止栈溢出
     static const uint32_t NIMBLE_HOST_STACK_SIZE = 8192 * 2; // 官方建议最小8192，实际复杂场景建议16384
-    nimble_port_freertos_init(ble_host_task);
     ESP_LOGI(TAG, "%s BLE初始化完成，主机任务栈大小: %lu字节", GetTimeString().c_str(), NIMBLE_HOST_STACK_SIZE);
 
+    // 在初始化流程最后，启动BLE主机任务
+    nimble_port_freertos_init(ble_host_task);
 }
 
 int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,

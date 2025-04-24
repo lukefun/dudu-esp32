@@ -35,22 +35,23 @@
 #define CHECK_NEW_VERSION_DONE_EVENT (1 << 3)
 
 enum DeviceState {
-    kDeviceStateUnknown,
-    kDeviceStateStarting,
-    kDeviceStateWifiConfiguring,
-    kDeviceStateIdle,
-    kDeviceStateConnecting,
-    kDeviceStateListening,
-    kDeviceStateSpeaking,
-    kDeviceStateUpgrading,
-    kDeviceStateActivating,
-    kDeviceStateFatalError
+    kDeviceStateUnknown,            // [新增] 设备状态：未知
+    kDeviceStateStarting,           // [新增] 设备状态：启动中
+    kDeviceStateWifiConfiguring,    // [新增] 设备状态：WiFi配置中
+    kDeviceStateIdle,               // [新增] 设备状态：空闲
+    kDeviceStateConnecting,         // [新增] 设备状态：连接中
+    kDeviceStateListening,          // [新增] 设备状态：倾听中
+    kDeviceStateSpeaking,           // [新增] 设备状态：说话中
+    kDeviceStateUpgrading,          // [新增] 设备状态：升级中
+    kDeviceStateActivating,         // [新增] 设备状态：激活中
+    kDeviceStateFatalError          // [新增] 设备状态：致命错误
 };
 
 #define OPUS_FRAME_DURATION_MS 60
 
 class Application {
 public:
+    // 单例模式获取实例
     static Application& GetInstance() {
         static Application instance;
         return instance;
@@ -63,7 +64,8 @@ public:
     DeviceState GetDeviceState() const { return device_state_; }
     bool IsVoiceDetected() const { return voice_detected_; }
     void Schedule(std::function<void()> callback);
-    void SetDeviceState(DeviceState state);
+    // 添加设置设备状态的函数
+    void SetDeviceState(DeviceState state);  
     void Alert(const char* status, const char* message, const char* emotion = "", const std::string_view& sound = "");
     void DismissAlert();
     void AbortSpeaking(AbortReason reason);
