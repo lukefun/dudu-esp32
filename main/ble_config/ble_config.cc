@@ -153,15 +153,17 @@ void BleConfig::Initialize() {
     g_ble_config_instance = this;   // 保存实例指针
     ESP_LOGI(TAG, "%s 开始初始化BLE配网模块...", GetTimeString().c_str());
 
-    // 1. 初始化NVS："Non-Volatile Storage" 的缩写，即非易失性存储
+    // 完全避免尝试清理资源的过程，直接初始化
+    ESP_LOGI(TAG, "%s 跳过清理步骤，直接初始化NimBLE", GetTimeString().c_str());
+
+    // 1. 初始化NVS
     ESP_LOGI(TAG, "%s 初始化NVS存储...", GetTimeString().c_str());
+    esp_err_t nvs_ret = nvs_flash_init();
 
-    esp_err_t nvs_ret = nvs_flash_init();   // 初始化NVS
-
-    // 检查NVS是否需要擦除
+    // 如果NVS分区已满或版本不匹配，则擦除重新初始化
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "%s NVS需要擦除: %s", GetTimeString().c_str(), nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ? "无可用页面" : "新版本");
-        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_LOGW(TAG, "%s NVS需要擦除", GetTimeString().c_str());
+        nvs_flash_erase();
         nvs_ret = nvs_flash_init();
     }
 
@@ -169,71 +171,78 @@ void BleConfig::Initialize() {
         ESP_LOGE(TAG, "%s NVS初始化失败: %s", GetTimeString().c_str(), esp_err_to_name(nvs_ret));
         return;
     }
+    ESP_LOGI(TAG, "%s NVS初始化成功", GetTimeString().c_str());
 
-    ESP_LOGI(TAG, "%s NVS初始化成功", GetTimeString().c_str()); // 打印NVS初始化成功
-
-    // 2. GATT服务配置
-    ESP_LOGI(TAG, "%s 配置GATT服务...", GetTimeString().c_str());
+    // 2. 解析服务和特征UUID
+    ESP_LOGI(TAG, "%s 解析BLE服务UUID", GetTimeString().c_str());
     parse_all_uuids();
-    
-    // 3. Host初始化
-    ESP_LOGI(TAG, "%s 初始化NimBLE主机...", GetTimeString().c_str());
-    nimble_port_freertos_init(ble_host_task);
-    ESP_LOGI(TAG, "%s NimBLE主机初始化完成", GetTimeString().c_str());
 
-    // 4. 主机配置
-    ESP_LOGI(TAG, "%s 初始化BLE存储配置...", GetTimeString().c_str());
-    ble_store_config_init();    // 初始化BLE存储
-    ESP_LOGI(TAG, "%s BLE存储初始化成功", GetTimeString().c_str());
+    // 3. 打印当前内存状态
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "%s BLE初始化前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
 
-    // === 安全配置开始 ===
-    ESP_LOGI(TAG, "%s 配置BLE安全参数...", GetTimeString().c_str());
-    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO; // 没有输入输出
-    ble_hs_cfg.sm_bonding = 1;  // 启用配对
-    ble_hs_cfg.sm_mitm = 1;     // 允许中间人攻击
-    ble_hs_cfg.sm_sc = 1;       // 启用扫描
-    ble_hs_cfg.sm_keypress = 0; // 不允许按键输入
-    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;  // 我们的密钥分发
-    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;    // 对方的密钥分发
-    // === 安全配置结束 ===
-    ESP_LOGI(TAG, "%s BLE安全参数配置完成", GetTimeString().c_str());
-
-    ESP_LOGI(TAG, "%s 设置BLE回调函数...", GetTimeString().c_str());
-    ble_hs_cfg.reset_cb = ble_on_reset; // 重置回调
-    ble_hs_cfg.sync_cb = ble_on_sync;   // 同步回调
-    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;    // GATT服务注册回调
-    ble_hs_cfg.store_status_cb = NULL;  // 存储状态回调
-    ESP_LOGI(TAG, "%s BLE回调函数设置完成", GetTimeString().c_str());
-
-    // 新版API注册方式（ESP-IDF v5.3.2+）
-    // 3. 设备名称设置
-    ESP_LOGI(TAG, "%s 注册BLE事件监听器...", GetTimeString().c_str());
-    static struct ble_gap_event_listener ble_event_listener = {0};
-    int rc = ble_gap_event_listener_register(
-        &ble_event_listener,
-        ble_gap_event,  // 注意：这里不需要取地址符&
-        NULL);          // 没有需要传递的参数
-    if (rc == 0) {
-        ESP_LOGI(TAG, "%s BLE事件监听器注册成功", GetTimeString().c_str());
-    } else {
-        ESP_LOGE(TAG, "%s BLE事件监听器注册失败: %d", GetTimeString().c_str(), rc);
+    // 检查内存是否足够
+    if (free_heap < 60000) {
+        ESP_LOGW(TAG, "%s 可用内存较低，但仍将继续初始化", GetTimeString().c_str());
     }
-    assert(rc == 0);
 
-    ESP_LOGI(TAG, "%s 初始化GATT服务器...", GetTimeString().c_str());
+    // 4. 初始化NimBLE
+    ESP_LOGI(TAG, "%s 初始化NimBLE端口", GetTimeString().c_str());
+    esp_err_t rc = nimble_port_init();
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "%s NimBLE端口初始化失败: %d", GetTimeString().c_str(), rc);
+        return;
+    }
+    ESP_LOGI(TAG, "%s NimBLE端口初始化成功", GetTimeString().c_str());
+
+    // 5. 配置BLE安全参数
+    ESP_LOGI(TAG, "%s 配置BLE安全参数", GetTimeString().c_str());
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 1;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_keypress = 0;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
+
+    // 6. 设置回调函数
+    ESP_LOGI(TAG, "%s 设置BLE回调函数", GetTimeString().c_str());
+    ble_hs_cfg.reset_cb = ble_on_reset;
+    ble_hs_cfg.sync_cb = ble_on_sync;
+    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
+    ble_hs_cfg.store_status_cb = NULL;
+
+    // 7. 初始化GATT服务器
+    ESP_LOGI(TAG, "%s 初始化GATT服务器", GetTimeString().c_str());
     gatt_svr_init();
 
-    ESP_LOGI(TAG, "%s 设置BLE设备名称...", GetTimeString().c_str());
-    // 修改设备名称为更短的名称，避免超出BLE广播名称长度限制
-    rc = ble_svc_gap_device_name_set("DuDu-BLE");
-    if (rc == 0) {
-        ESP_LOGI(TAG, "%s BLE设备名称设置成功: DuDu-BLE", GetTimeString().c_str());
-    } else {
-        ESP_LOGE(TAG, "%s BLE设备名称设置失败: %d", GetTimeString().c_str(), rc);
+    // 8. 设置设备名称
+    ESP_LOGI(TAG, "%s 设置BLE设备名称", GetTimeString().c_str());
+    int name_rc = ble_svc_gap_device_name_set("DuDu-BLE");
+    if (name_rc != 0) {
+        ESP_LOGW(TAG, "%s 设置设备名称失败: %d", GetTimeString().c_str(), name_rc);
     }
-    assert(rc == 0);
 
-    ESP_LOGI(TAG, "%s BLE初始化完成，主机任务栈大小: %d字节（SDK默认配置）", GetTimeString().c_str(), CONFIG_BT_NIMBLE_TASK_STACK_SIZE);
+    // 9. 初始化BLE存储
+    ESP_LOGI(TAG, "%s 初始化BLE存储", GetTimeString().c_str());
+    ble_store_config_init();
+
+    // 10. 启动BLE主机任务
+    ESP_LOGI(TAG, "%s 创建BLE主机任务", GetTimeString().c_str());
+    xTaskCreatePinnedToCore(
+        ble_host_task, 
+        "ble_host_task",
+        16384,        // 16KB栈大小
+        NULL,         // 不传递参数
+        10,           // 优先级
+        NULL,         // 不需要任务句柄
+        0             // 在核心0上运行
+    );
+
+    // 等待一小段时间，让BLE任务启动
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    ESP_LOGI(TAG, "%s BLE初始化完成", GetTimeString().c_str());
 }
 
 int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -332,19 +341,22 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
 void BleConfig::gatt_svr_init(void) {
     ESP_LOGI(TAG, "%s 初始化GATT服务器...", GetTimeString().c_str());
     int rc;
+    
+    // 配置GATT服务
     rc = ble_gatts_count_cfg(gatt_svr_svcs);
     if (rc != 0) {
-        ESP_LOGE(TAG, "GATT服务计数配置失败: %d", rc);
+        ESP_LOGE(TAG, "%s GATT服务计数配置失败: %d", GetTimeString().c_str(), rc);
+        return; // 失败时直接返回，不使用assert
     }
-    assert(rc == 0);
     
+    // 添加GATT服务
     rc = ble_gatts_add_svcs(gatt_svr_svcs);
     if (rc != 0) {
-        ESP_LOGE(TAG, "添加GATT服务失败: %d", rc);
+        ESP_LOGE(TAG, "%s 添加GATT服务失败: %d", GetTimeString().c_str(), rc);
+        return; // 失败时直接返回，不使用assert
     }
-    assert(rc == 0);
     
-    ESP_LOGI(TAG, "GATT服务器初始化成功");
+    ESP_LOGI(TAG, "%s GATT服务器初始化成功", GetTimeString().c_str());
 }
 
 void BleConfig::ble_advertise(void) {
@@ -495,48 +507,51 @@ void BleConfig::ble_on_reset(int reason) {
 void BleConfig::ble_host_task(void *param) {
     ESP_LOGI(TAG, "%s BLE主机任务已启动", GetTimeString().c_str());
     
-    // 注册任务到看门狗，确保任务被监控
-    ESP_LOGI(TAG, "%s 注册BLE主机任务到看门狗", GetTimeString().c_str());
+    // 检查可用内存
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "%s BLE主机任务启动时可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    
+    // 添加任务到看门狗
     esp_err_t err = esp_task_wdt_add(NULL);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "%s 注册任务到看门狗失败: %s", GetTimeString().c_str(), esp_err_to_name(err));
+        ESP_LOGW(TAG, "%s 添加任务到看门狗失败: %d", GetTimeString().c_str(), err);
     }
     
-    // 首次喂狗
+    // 喂看门狗
     esp_task_wdt_reset();
     
-    // 创建定时器用于定期喂狗
-    TimerHandle_t wdt_timer = xTimerCreate(
-        "ble_wdt_timer",
-        pdMS_TO_TICKS(5000),  // 5秒喂一次狗，小于看门狗超时时间(10秒)
-        pdTRUE,               // 自动重载
-        NULL,                 // 定时器ID不重要
-        [](TimerHandle_t xTimer) {
-            // 定时器回调函数，用于喂狗
-            esp_task_wdt_reset();
-            ESP_LOGD(TAG, "BLE主机任务定时喂狗");
+    // 初始化主机
+    ESP_LOGI(TAG, "%s 初始化BLE主机", GetTimeString().c_str());
+    ble_hs_init();
+    
+    // 获取事件队列
+    struct ble_npl_eventq *eventq = nimble_port_get_dflt_eventq();
+    if (eventq == NULL) {
+        ESP_LOGE(TAG, "%s 获取事件队列失败", GetTimeString().c_str());
+        goto cleanup;
+    }
+    
+    // 主循环
+    ESP_LOGI(TAG, "%s 进入BLE事件循环", GetTimeString().c_str());
+    while (1) {
+        // 喂看门狗
+        esp_task_wdt_reset();
+        
+        // 处理事件
+        struct ble_npl_event *ev = ble_npl_eventq_get(eventq, BLE_NPL_TIME_FOREVER);
+        if (ev) {
+            ble_npl_event_run(ev);
         }
-    );
-    
-    if (wdt_timer != NULL) {
-        xTimerStart(wdt_timer, 0);
-        ESP_LOGI(TAG, "%s BLE主机任务看门狗定时器已启动", GetTimeString().c_str());
+        
+        // 短暂延时，避免CPU占用过高
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     
-    // 运行NimBLE主机任务
-    nimble_port_run();
-    
-    // 任务结束，清理资源
-    if (wdt_timer != NULL) {
-        xTimerStop(wdt_timer, 0);
-        xTimerDelete(wdt_timer, 0);
-    }
-    
+cleanup:
     // 从看门狗中移除任务
     esp_task_wdt_delete(NULL);
-    
-    nimble_port_freertos_deinit();
-    ESP_LOGI(TAG, "%s BLE主机任务已停止", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s BLE主机任务退出", GetTimeString().c_str());
+    vTaskDelete(NULL);
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
