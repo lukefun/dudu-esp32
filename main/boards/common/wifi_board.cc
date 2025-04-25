@@ -19,6 +19,7 @@
 #include <tls_transport.h>
 #include <web_socket.h>
 #include <esp_log.h>
+#include "esp_task_wdt.h"
 
 #include <wifi_station.h>
 #include <wifi_configuration_ap.h>
@@ -158,16 +159,36 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     ESP_LOGI(TAG, "%s 启动WiFi前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
              GetTimeString().c_str(), free_sram, min_free_sram);
     
-    // 启动WiFi连接
-    ESP_LOGI(TAG, "%s 开始启动WiFi连接...", GetTimeString().c_str());
+    // 如果可用内存过低，尝试释放一些内存
+    if (free_sram < 60000) {
+        ESP_LOGW(TAG, "%s 可用内存较低，尝试释放资源...", GetTimeString().c_str());
+        // 停止BLE广播以释放资源
+        BleConfig::GetInstance().StopAdvertising();
+        // 强制执行垃圾回收
+        heap_caps_check_integrity_all(true);
+        // 再次检查内存
+        free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "%s 释放资源后内存状态 - 当前可用: %u 字节", GetTimeString().c_str(), free_sram);
+    }
+    
+    // 重置任务看门狗，防止WiFi初始化过程中触发看门狗超时
+    esp_task_wdt_reset();
+    
+    // 启动WiFi
     wifi_station.Start();
     
     // 短暂延时，让WiFi任务有时间初始化
     vTaskDelay(pdMS_TO_TICKS(500));
     
+    // 重置任务看门狗
+    esp_task_wdt_reset();
+    
     // 等待连接结果，使用更长的超时时间
     ESP_LOGI(TAG, "%s 等待WiFi连接结果，超时时间: 20秒", GetTimeString().c_str());
     bool connected = wifi_station.WaitForConnected(20000); // 增加到20秒
+
+    // 连接过程完成，再次重置看门狗
+    esp_task_wdt_reset();
 
     if (connected) {
         ESP_LOGI(TAG, "%s WiFi连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
@@ -179,6 +200,15 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
         OnBleWifiConnectResult(false, BLE_WIFI_REASON_CONNECTION_FAIL);
     } // 连接失败，继续等待用户操作或重试
 }
+
+// 新增：BLE配网错误码
+enum {
+    // 删除重复的枚举定义
+    // BLE_WIFI_REASON_AUTH_FAIL = 1,
+    // BLE_WIFI_REASON_NO_AP_FOUND,
+    // BLE_WIFI_REASON_CONNECTION_FAIL,
+    BLE_WIFI_REASON_INIT_FAIL,     // WiFi初始化失败
+};
 
 // 新增：处理BLE配网结果
 void WifiBoard::OnBleWifiConnectResult(bool success, int err_code) {

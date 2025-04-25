@@ -7,6 +7,9 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "nvs_flash.h"
+#include "esp_task_wdt.h"  // 添加任务看门狗头文件
+#include "freertos/FreeRTOS.h"  // FreeRTOS头文件
+#include "freertos/timers.h"    // FreeRTOS定时器头文件
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -150,24 +153,23 @@ void BleConfig::Initialize() {
     g_ble_config_instance = this;   // 保存实例指针
     ESP_LOGI(TAG, "%s 开始初始化BLE配网模块...", GetTimeString().c_str());
 
-    // 1. 初始化NVS： "Non-Volatile Storage" 的缩写，即非易失性存储
+    // 1. 初始化NVS："Non-Volatile Storage" 的缩写，即非易失性存储
     ESP_LOGI(TAG, "%s 初始化NVS存储...", GetTimeString().c_str());
 
-    esp_err_t ret = nvs_flash_init();   // 初始化NVS
+    esp_err_t nvs_ret = nvs_flash_init();   // 初始化NVS
 
-    // 检查NVS是否需要擦除(在使用非易失性存储（NVS）时没有可用的空闲页面。|| 新的NVS版本可用
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "%s NVS需要擦除: %s", GetTimeString().c_str(), ret == ESP_ERR_NVS_NO_FREE_PAGES ? "无可用页面" : "新版本");
-        ESP_ERROR_CHECK(nvs_flash_erase()); // 擦除NVS
-        ret = nvs_flash_init(); // 再次初始化NVS
+    // 检查NVS是否需要擦除
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "%s NVS需要擦除: %s", GetTimeString().c_str(), nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ? "无可用页面" : "新版本");
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
     }
-    
-    // 添加错误处理
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "%s NVS初始化失败: %s", GetTimeString().c_str(), esp_err_to_name(ret));
-        return; // 初始化失败直接返回
+
+    if (nvs_ret != ESP_OK) {
+        ESP_LOGE(TAG, "%s NVS初始化失败: %s", GetTimeString().c_str(), esp_err_to_name(nvs_ret));
+        return;
     }
-    
+
     ESP_LOGI(TAG, "%s NVS初始化成功", GetTimeString().c_str()); // 打印NVS初始化成功
 
     // 2. GATT服务配置
@@ -176,11 +178,7 @@ void BleConfig::Initialize() {
     
     // 3. Host初始化
     ESP_LOGI(TAG, "%s 初始化NimBLE主机...", GetTimeString().c_str());
-    int rc = nimble_port_init(); // 初始化NimBLE主机
-    if (rc != 0) {
-        ESP_LOGE(TAG, "%s NimBLE主机初始化失败: %d", GetTimeString().c_str(), rc);
-        return; // 初始化失败直接返回
-    }
+    nimble_port_freertos_init(ble_host_task);
     ESP_LOGI(TAG, "%s NimBLE主机初始化完成", GetTimeString().c_str());
 
     // 4. 主机配置
@@ -211,7 +209,7 @@ void BleConfig::Initialize() {
     // 3. 设备名称设置
     ESP_LOGI(TAG, "%s 注册BLE事件监听器...", GetTimeString().c_str());
     static struct ble_gap_event_listener ble_event_listener = {0};
-    rc = ble_gap_event_listener_register(
+    int rc = ble_gap_event_listener_register(
         &ble_event_listener,
         ble_gap_event,  // 注意：这里不需要取地址符&
         NULL);          // 没有需要传递的参数
@@ -235,11 +233,7 @@ void BleConfig::Initialize() {
     }
     assert(rc == 0);
 
-    // 4. Host任务启动 - 增加栈大小以防止栈溢出
-    static const uint32_t NIMBLE_HOST_STACK_SIZE = 8192 * 2; // 官方建议最小8192，实际复杂场景建议16384
-    nimble_port_freertos_init(ble_host_task);
-    ESP_LOGI(TAG, "%s BLE初始化完成，主机任务栈大小: %lu字节", GetTimeString().c_str(), NIMBLE_HOST_STACK_SIZE);
-
+    ESP_LOGI(TAG, "%s BLE初始化完成，主机任务栈大小: %d字节（SDK默认配置）", GetTimeString().c_str(), CONFIG_BT_NIMBLE_TASK_STACK_SIZE);
 }
 
 int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -500,7 +494,47 @@ void BleConfig::ble_on_reset(int reason) {
 
 void BleConfig::ble_host_task(void *param) {
     ESP_LOGI(TAG, "%s BLE主机任务已启动", GetTimeString().c_str());
+    
+    // 注册任务到看门狗，确保任务被监控
+    ESP_LOGI(TAG, "%s 注册BLE主机任务到看门狗", GetTimeString().c_str());
+    esp_err_t err = esp_task_wdt_add(NULL);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s 注册任务到看门狗失败: %s", GetTimeString().c_str(), esp_err_to_name(err));
+    }
+    
+    // 首次喂狗
+    esp_task_wdt_reset();
+    
+    // 创建定时器用于定期喂狗
+    TimerHandle_t wdt_timer = xTimerCreate(
+        "ble_wdt_timer",
+        pdMS_TO_TICKS(5000),  // 5秒喂一次狗，小于看门狗超时时间(10秒)
+        pdTRUE,               // 自动重载
+        NULL,                 // 定时器ID不重要
+        [](TimerHandle_t xTimer) {
+            // 定时器回调函数，用于喂狗
+            esp_task_wdt_reset();
+            ESP_LOGD(TAG, "BLE主机任务定时喂狗");
+        }
+    );
+    
+    if (wdt_timer != NULL) {
+        xTimerStart(wdt_timer, 0);
+        ESP_LOGI(TAG, "%s BLE主机任务看门狗定时器已启动", GetTimeString().c_str());
+    }
+    
+    // 运行NimBLE主机任务
     nimble_port_run();
+    
+    // 任务结束，清理资源
+    if (wdt_timer != NULL) {
+        xTimerStop(wdt_timer, 0);
+        xTimerDelete(wdt_timer, 0);
+    }
+    
+    // 从看门狗中移除任务
+    esp_task_wdt_delete(NULL);
+    
     nimble_port_freertos_deinit();
     ESP_LOGI(TAG, "%s BLE主机任务已停止", GetTimeString().c_str());
 }
@@ -508,12 +542,19 @@ void BleConfig::ble_host_task(void *param) {
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     ESP_LOGI(TAG, "%s 尝试发送WiFi状态: %d", GetTimeString().c_str(), status);
     
+    // 喂任务看门狗，防止长时间操作导致看门狗超时
+    esp_task_wdt_reset();
+    
     if (conn_handle_ == BLE_HS_CONN_HANDLE_NONE || status_val_handle_ == 0) {
         ESP_LOGW(TAG, "%s 无法发送状态，没有连接或句柄无效 (conn_handle=%d, status_val_handle=%d)", 
                 GetTimeString().c_str(), conn_handle_, status_val_handle_);
         return;
     }
 
+    // 分配内存前先检查可用堆内存
+    size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "%s 当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    
     struct os_mbuf *om = ble_hs_mbuf_from_flat(&status, sizeof(status));
     if (!om) {
         ESP_LOGE(TAG, "%s 为通知分配内存失败", GetTimeString().c_str());
@@ -521,8 +562,12 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     }
 
     // === 修正重试机制：只在循环内发送，不再多发一次 ===
+    // 增加短暂延时，确保BLE栈有足够时间处理
     int rc = -1;
     for(int retry = 0; retry < NOTIFY_RETRY_COUNT; retry++) {
+        // 每次发送前喂狗
+        esp_task_wdt_reset();
+        
         rc = ble_gatts_notify_custom(conn_handle_, status_val_handle_, om);
         if(rc == 0) {
             ESP_LOGI(TAG, "%s WiFi状态通知发送成功: %d", GetTimeString().c_str(), status);
@@ -530,6 +575,9 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
         }
         ESP_LOGW(TAG, "%s 通知发送失败 (尝试 %d/%d)，错误码: %d，稍后重试...", 
                 GetTimeString().c_str(), retry+1, NOTIFY_RETRY_COUNT, rc);
+        
+        // 延时前再次喂狗
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_RETRY_DELAY_MS));
     }
     if (rc != 0) {
@@ -537,6 +585,9 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     }
 
     os_mbuf_free_chain(om);  // 确保释放mbuf
+    
+    // 操作完成后再次喂狗
+    esp_task_wdt_reset();
 }
 
 void BleConfig::SetCredentialsReceivedCallback(std::function<void(const std::string&, const std::string&)> cb) {
