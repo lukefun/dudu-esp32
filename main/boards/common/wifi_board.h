@@ -8,6 +8,7 @@ enum ble_wifi_reason_t { // 改名为 ble_wifi_reason_t
     BLE_WIFI_REASON_AUTH_FAIL = 1,        // 认证失败（密码错误）
     BLE_WIFI_REASON_NO_AP_FOUND = 2,      // 未找到AP（SSID不存在）
     BLE_WIFI_REASON_CONNECTION_FAIL = 3,   // 连接失败（其他原因）
+    BLE_WIFI_REASON_INIT_FAIL = 4,     // WiFi初始化失败
 };
 
 class WifiBoard : public Board {
@@ -20,9 +21,6 @@ protected:
 
     // 新增：BLE配网流程中的WiFi连接
     void ConnectWifiByBle(const std::string& ssid, const std::string& password);
-    
-    // 新增：BLE配网流程中的WiFi连接结果回调
-    void OnBleWifiConnectResult(bool success, int err_code = 0); // 修改为接受两个参数
 
     // 新增：保存BLE配网过程中收到的SSID/密码
     std::string ble_ssid_;
