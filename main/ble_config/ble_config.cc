@@ -17,6 +17,11 @@
 
 static const char* TAG = "BLE_CONFIG";
 
+// 定义静态成员变量
+TaskHandle_t BleConfig::ble_host_task_handle = nullptr;
+volatile bool BleConfig::ble_host_task_running = true;
+volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;
+
 // 获取当前时间字符串
 static std::string GetTimeString() {
     struct timeval tv;
@@ -234,8 +239,8 @@ void BleConfig::Initialize() {
         "ble_host_task",
         16384,        // 16KB栈大小
         NULL,         // 不传递参数
-        10,           // 优先级
-        NULL,         // 不需要任务句柄
+        10,           // 改回 10
+        &ble_host_task_handle, // <<< 保存任务句柄到成员变量
         0             // 在核心0上运行
     );
 
@@ -504,54 +509,95 @@ void BleConfig::ble_on_reset(int reason) {
     ESP_LOGE(TAG, "%s BLE主机重置，原因: %d", GetTimeString().c_str(), reason);
 }
 
+// BLE主机任务，负责管理BLE主机的生命周期，包括初始化、同步、广播等
 void BleConfig::ble_host_task(void *param) {
     ESP_LOGI(TAG, "%s BLE主机任务已启动", GetTimeString().c_str());
-    
-    // 检查可用内存
+
+    // 1. 保存任务句柄
+    ble_host_task_handle = xTaskGetCurrentTaskHandle();
+
+    // 2. 添加到看门狗
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+
+
+    // esp_err_t err = esp_task_wdt_add(NULL);
+    // if (err != ESP_OK) {
+    //     ESP_LOGW(TAG, "%s 添加任务到看门狗失败: %d", GetTimeString().c_str(), err);
+    // }
+
+
+
+    // 3. 设置任务状态
+    ble_host_task_state = BLE_TASK_RUNNING;
+
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     ESP_LOGI(TAG, "%s BLE主机任务启动时可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
-    
-    // 添加任务到看门狗
-    esp_err_t err = esp_task_wdt_add(NULL);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "%s 添加任务到看门狗失败: %d", GetTimeString().c_str(), err);
-    }
-    
-    // 喂看门狗
-    esp_task_wdt_reset();
-    
-    // 初始化主机
-    ESP_LOGI(TAG, "%s 初始化BLE主机", GetTimeString().c_str());
-    ble_hs_init();
-    
-    // 获取事件队列
-    struct ble_npl_eventq *eventq = nimble_port_get_dflt_eventq();
-    if (eventq == NULL) {
-        ESP_LOGE(TAG, "%s 获取事件队列失败", GetTimeString().c_str());
-        goto cleanup;
-    }
-    
-    // 主循环
-    ESP_LOGI(TAG, "%s 进入BLE事件循环", GetTimeString().c_str());
-    while (1) {
-        // 喂看门狗
-        esp_task_wdt_reset();
-        
-        // 处理事件
-        struct ble_npl_event *ev = ble_npl_eventq_get(eventq, BLE_NPL_TIME_FOREVER);
-        if (ev) {
-            ble_npl_event_run(ev);
+
+    // 4. 主循环
+    while (ble_host_task_running) {
+        // 获取事件队列
+        struct ble_npl_eventq *eventq = nimble_port_get_dflt_eventq();
+        if (eventq != NULL) {
+            // 处理事件，设置超时确保定期喂狗
+            struct ble_npl_event *ev = ble_npl_eventq_get(eventq, pdMS_TO_TICKS(100));
+            if (ev) {
+                ble_npl_event_run(ev);
+            }
         }
         
-        // 短暂延时，避免CPU占用过高
+        // 喂狗
+        esp_task_wdt_reset();
+        
+        // 短暂延时
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    
-cleanup:
-    // 从看门狗中移除任务
-    esp_task_wdt_delete(NULL);
+
+    // 5. 清理工作
+    esp_task_wdt_delete(NULL);  // 从看门狗中移除任务
     ESP_LOGI(TAG, "%s BLE主机任务退出", GetTimeString().c_str());
+    ble_host_task_state = BLE_TASK_STOPPED;
     vTaskDelete(NULL);
+
+
+
+
+
+
+
+    // // 初始化主机
+    // ESP_LOGI(TAG, "%s 初始化BLE主机", GetTimeString().c_str());
+    // ble_hs_init();
+    
+    // // 获取事件队列
+    // struct ble_npl_eventq *eventq = nimble_port_get_dflt_eventq();
+    // if (eventq == NULL) {
+    //     ESP_LOGE(TAG, "%s 获取事件队列失败", GetTimeString().c_str());
+    //     goto cleanup;
+    // }
+    
+    // // 主循环
+    // ESP_LOGI(TAG, "%s 进入BLE事件循环", GetTimeString().c_str());
+    // while (1) {
+    //     // 阻塞等待BLE事件，设置1秒超时，以便定期喂狗
+    //     struct ble_npl_event *ev = ble_npl_eventq_get(eventq, pdMS_TO_TICKS(1000));
+        
+    //     // 每次循环都喂狗
+    //     esp_task_wdt_reset();
+
+    //     // 处理事件
+    //     if (ev) {
+    //         ble_npl_event_run(ev);
+    //     }
+        
+    //     // 短暂延时，避免CPU占用过高
+    //     vTaskDelay(pdMS_TO_TICKS(10));
+    // }
+    
+// cleanup:
+//     // 从看门狗中移除任务
+//     esp_task_wdt_delete(NULL);
+//     ESP_LOGI(TAG, "%s BLE主机任务退出", GetTimeString().c_str());
+//     vTaskDelete(NULL);
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
@@ -688,4 +734,47 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
         ESP_LOGD(TAG, "%s 未处理的BLE事件: %d", GetTimeString().c_str(), event->type);
         return 0;
     }
+}
+
+// 新增：完整去初始化BLE模块的实现
+void BleConfig::Deinitialize() {
+    ESP_LOGI(TAG, "%s 开始完整去初始化BLE模块...", GetTimeString().c_str());
+
+    // 1. 先停止所有BLE活动
+    StopAdvertising();
+
+    // 2. 等待所有BLE操作完成
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // 3. 从看门狗中移除任务
+    if (ble_host_task_handle != NULL) {
+        esp_task_wdt_delete(ble_host_task_handle);
+        ble_host_task_handle = NULL;
+    }
+
+    // 4. 标记任务需要退出
+    ble_host_task_running = false;
+
+    // 5. 等待任务自行退出
+    while (ble_host_task_state != BLE_TASK_STOPPED) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // 6. 去初始化NimBLE，调用 NimBLE 移植层提供的去初始化函数
+    int rc = nimble_port_deinit();
+    if (rc == 0) {
+        ESP_LOGI(TAG, "%s NimBLE模块去初始化成功", GetTimeString().c_str());
+    } else {
+        ESP_LOGE(TAG, "%s NimBLE模块去初始化失败: %d", GetTimeString().c_str(), rc);
+    }
+
+    // 7. 释放资源
+    if (ble_host_task_handle != NULL) {
+        vTaskDelete(ble_host_task_handle);
+        ble_host_task_handle = NULL;
+    }
+
+    // 清空全局实例指针，防止野指针
+    g_ble_config_instance = nullptr; // <<< 置空，避免在 BLE 已经释放后，静态回调函数（如果被意外调用）使用无效的指针。
+    ESP_LOGI(TAG, "%s BLE模块去初始化完成", GetTimeString().c_str());
 }
