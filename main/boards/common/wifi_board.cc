@@ -83,7 +83,7 @@ void WifiBoard::EnterWifiConfigMode() {
         // 不直接保存和重启，等收到连接命令后再处理
     });
 
-    // 设置开始连接 WiFi 的回调
+    // 设置开始连接 WiFi 的回调，在收到连接命令时调用，并在连接成功后调用 ConnectWifiByBle 函数，并传递凭据
     ESP_LOGI(TAG, "%s 设置连接 WiFi 回调", GetTimeString().c_str());
     ble_config.SetConnectWifiCallback([this]() {
         ESP_LOGI(TAG, "%s 收到连接 WiFi 命令", GetTimeString().c_str());
@@ -92,16 +92,8 @@ void WifiBoard::EnterWifiConfigMode() {
         int free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         ESP_LOGI(TAG, "%s 连接WiFi前内存状态: %d 字节", GetTimeString().c_str(), free_heap);
         
-        // 如果内存过低，尝试释放资源
-        if (free_heap < 50000) {
-            ESP_LOGW(TAG, "%s 内存偏低，尝试释放资源...", GetTimeString().c_str());
-            // 执行垃圾回收
-            heap_caps_check_integrity_all(true);
-            // 强制运行一次垃圾回收
-            free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-            ESP_LOGI(TAG, "%s 释放资源后内存: %d 字节", GetTimeString().c_str(), free_heap);
-        }
-        
+
+        // 显示连接WiFi提示
         BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTING);
 
         // 检查凭据
@@ -114,16 +106,65 @@ void WifiBoard::EnterWifiConfigMode() {
         BleConfig::GetInstance().StopAdvertising();
         ESP_LOGI(TAG, "%s 已停止BLE广播，准备延迟启动WiFi", GetTimeString().c_str());
         
-        // 增加延迟时间，确保BLE完全停止
-        vTaskDelay(pdMS_TO_TICKS(1000)); // 延迟1000ms，确保BLE主机任务空闲
-        
-        // 再次检查内存
-        free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        ESP_LOGI(TAG, "%s 延迟后内存状态: %d 字节", GetTimeString().c_str(), free_heap);
-        
+        // >>>>>>> 在这里添加调用 BLE 去初始化 <<<<<<<
+        BleConfig::GetInstance().Deinitialize(); // 调用完整去初始化 BLE 模块
+
+        // >>>>>>> 修改点 2: 添加内存恢复等待机制 <<<<<<<
+        const size_t MIN_SAFE_INTERNAL_RAM = 50 * 1024; // 设定安全阈值50KB
+        const int MAX_WAIT_MS = 5000; // 最大等待5秒
+        int waited_time = 0;
+        ESP_LOGI(TAG, "%s 等待 BLE 资源释放，目标内部RAM >= %u KB (最大等待 %d ms)", 
+                 GetTimeString().c_str(), MIN_SAFE_INTERNAL_RAM / 1024, MAX_WAIT_MS);
+
+        while (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < MIN_SAFE_INTERNAL_RAM && waited_time < MAX_WAIT_MS) {
+            ESP_LOGD(TAG, "%s 当前可用内部RAM: %u 字节",
+                     GetTimeString().c_str(), heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+            // >>>>>>> 修改点: 在等待循环中打印 ble_host_task 状态和栈使用 <<<<<<<
+            TaskHandle_t ble_task_handle = BleConfig::GetInstance().GetBleHostTaskHandle();
+            if (ble_task_handle != nullptr) {
+                eTaskState task_state = eTaskGetState(ble_task_handle);
+                UBaseType_t stack_high_water_mark = uxTaskGetStackHighWaterMark(ble_task_handle);
+                const char* state_str;
+                switch(task_state) {
+                    case eRunning:   state_str = "Running"; break;
+                    case eReady:     state_str = "Ready"; break;
+                    case eBlocked:   state_str = "Blocked"; break;
+                    case eSuspended: state_str = "Suspended"; break;
+                    case eDeleted:   state_str = "Deleted"; break;
+                    case eInvalid:   state_str = "Invalid"; break;
+                    default:         state_str = "Unknown"; break;
+                }
+                ESP_LOGI(TAG, "%s ble_host_task 状态: %s, 栈最小剩余: %u 字节",
+                        GetTimeString().c_str(), state_str, stack_high_water_mark * sizeof(StackType_t)); // 栈最小剩余通常以字节为单位
+            } else {
+                ESP_LOGW(TAG, "%s ble_host_task 句柄无效", GetTimeString().c_str());
+            }
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+            vTaskDelay(pdMS_TO_TICKS(50));
+            waited_time += 50;
+            esp_task_wdt_reset();
+        }
+
+        int free_sram_after_deinit = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "%s BLE资源释放后内存状态 - 当前可用: %u 字节 (等待 %d ms)",
+                 GetTimeString().c_str(), free_sram_after_deinit, waited_time);
+
+        if (free_sram_after_deinit < MIN_SAFE_INTERNAL_RAM) {
+            ESP_LOGE(TAG, "%s BLE资源释放失败，内存不足! 剩余RAM: %u KB",
+                     GetTimeString().c_str(), free_sram_after_deinit / 1024);
+            BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_FAIL_OTHER);
+            Application::GetInstance().Schedule([this]() {
+                Application::GetInstance().Alert(Lang::Strings::ERROR, "内存资源不足", "sad", Lang::Sounds::P3_EXCLAMATION);
+            });
+            return;
+        }
+
         // 重置任务看门狗，防止过长操作导致看门狗复位
         esp_task_wdt_reset();
         
+        // 启动WiFi
         ConnectWifiByBle(ble_ssid_, ble_password_);
     });
 
@@ -177,6 +218,7 @@ void WifiBoard::EnterWifiConfigMode() {
     ESP_LOGI(TAG, "%s 显示配网提示并播放提示音", GetTimeString().c_str());
     application.Alert(Lang::Strings::BLE_CONFIG_MODE, hint.c_str(), "", Lang::Sounds::P3_WIFICONFIG);
 
+    // 进入配网等待循环，等待配网完成或设备重启
     ESP_LOGI(TAG, "%s 进入配网等待循环，等待配网完成或设备重启", GetTimeString().c_str());
     while (true) {
         int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -246,51 +288,57 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
 
     if (connected) {
         ESP_LOGI(TAG, "%s WiFi连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
-        // 通知BLE配网结果
-        OnBleWifiConnectResult(true, 0);
-    } else {
-        ESP_LOGW(TAG, "%s WiFi连接失败", GetTimeString().c_str());
-        // 通知BLE配网结果，使用自定义错误码
-        OnBleWifiConnectResult(false, BLE_WIFI_REASON_CONNECTION_FAIL);
-    } // 连接失败，继续等待用户操作或重试
-}
-
-// 新增：BLE配网错误码
-enum {
-    // 删除重复的枚举定义
-    // BLE_WIFI_REASON_AUTH_FAIL = 1,
-    // BLE_WIFI_REASON_NO_AP_FOUND,
-    // BLE_WIFI_REASON_CONNECTION_FAIL,
-    BLE_WIFI_REASON_INIT_FAIL,     // WiFi初始化失败
-};
-
-// 新增：处理BLE配网结果
-void WifiBoard::OnBleWifiConnectResult(bool success, int err_code) {
-    if (success) {
-        ESP_LOGI(TAG, "%s BLE配网WiFi连接成功", GetTimeString().c_str());
+        // 发送连接成功状态
         BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTED);
+        // 短暂延时确保状态发送成功
+        vTaskDelay(pdMS_TO_TICKS(500));
+        // 去初始化BLE模块
+        BleConfig::GetInstance().Deinitialize();
+        // 延时后重启
         vTaskDelay(pdMS_TO_TICKS(1000));
         esp_restart();
     } else {
-        ESP_LOGW(TAG, "BLE配网WiFi连接失败，错误码: %d", err_code);
-        // 根据错误码发送不同的状态
-        wifi_config_status_t status;
-        switch (err_code) {
-            case BLE_WIFI_REASON_AUTH_FAIL:
-                status = WIFI_STATUS_FAIL_AUTH;
-                break;
-            case BLE_WIFI_REASON_NO_AP_FOUND:
-                status = WIFI_STATUS_FAIL_AP_NOT_FOUND;
-                break;
-            case BLE_WIFI_REASON_CONNECTION_FAIL:
-                status = WIFI_STATUS_FAIL_CONN;
-                break;
-            default:
-                status = WIFI_STATUS_FAIL_OTHER;
-                break;
+        ESP_LOGW(TAG, "%s WiFi连接失败", GetTimeString().c_str());
+        // 停止WiFi连接
+        wifi_station.Stop();
+        
+        // 发送连接失败状态
+        wifi_config_status_t status = WIFI_STATUS_FAIL_CONN;
+        if (!wifi_station.IsConnected()) {
+            // 如果连接失败，默认使用一般连接失败状态
+            status = WIFI_STATUS_FAIL_CONN;
         }
+        
+        // 确保BLE模块处于可用状态
+        if (!BleConfig::GetInstance().IsAdvertising()) {
+            ESP_LOGI(TAG, "%s 重新启动BLE广播", GetTimeString().c_str());
+            BleConfig::GetInstance().StartAdvertising();
+            // 给BLE一些时间来启动
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+        
+        // 发送失败状态并等待足够长的时间确保发送成功
+        ESP_LOGI(TAG, "%s 发送WiFi连接失败状态: %d", GetTimeString().c_str(), status);
         BleConfig::GetInstance().SendWifiStatus(status);
-        // 可根据需要决定是否重启或等待用户重新输入
+        vTaskDelay(pdMS_TO_TICKS(500));
+        
+        // 显示连接失败提示
+        auto display = Board::GetInstance().GetDisplay();
+        if (display) {
+            std::string error_msg;
+            switch (status) {
+                case WIFI_STATUS_FAIL_AP_NOT_FOUND:
+                    error_msg = "找不到WiFi热点";
+                    break;
+                case WIFI_STATUS_FAIL_AUTH:
+                    error_msg = "WiFi密码错误";
+                    break;
+                default:
+                    error_msg = "WiFi连接失败";
+                    break;
+            }
+            display->ShowNotification(error_msg.c_str(), 3000);
+        }
     }
 }
 
@@ -364,6 +412,9 @@ void WifiBoard::StartNetwork() {
         } else {
             ESP_LOGW(TAG, "尝试连接已保存的 WiFi 失败。");
             wifi_station.Stop(); // 停止尝试连接
+
+            // >>>>> 修改点: 如果尝试连接已保存的 Wi-Fi 失败，显式进入配网模式 <<<<<
+            wifi_config_mode_ = true; // 标记进入配网模式，以便 EnterWifiConfigMode 执行
         }
     }
 
@@ -382,6 +433,7 @@ void WifiBoard::StartNetwork() {
     // 进入 BLE 配网模式
     wifi_config_mode_ = true; // 标记进入配网模式
     EnterWifiConfigMode();
+    
 }
 
 Http* WifiBoard::CreateHttp() {
