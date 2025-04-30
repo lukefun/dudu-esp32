@@ -8,6 +8,7 @@
 #include "nimble/nimble_port.h"
 #include "host/ble_uuid.h"  // 确保ble_uuid_any_t定义可见
 #include "host/ble_gap.h"   // 确保ble_gap_event_listener定义完整
+#include "ble_task_state.h" // 包含任务状态定义
 
 // 定义我们之前设计的 UUID
 #define WIFI_CONFIG_SERVICE_UUID      "CDB7950D-73F1-4D4D-8E47-C090502DBD63"
@@ -38,6 +39,20 @@ public:
     static BleConfig& GetInstance() {
         static BleConfig instance;
         return instance;
+    }
+
+    // 新增：获取BLE主机任务句柄
+    // 修改为静态成员函数，返回静态成员变量
+    static TaskHandle_t GetBleHostTaskHandle() { 
+        return ble_host_task_handle; 
+    }
+
+    // 新增：完整去初始化BLE模块
+    void Deinitialize();
+
+    // 检查是否正在广播
+    bool IsAdvertising() const {
+        return ble_gap_adv_active();
     }
 
     // 禁止拷贝和赋值
@@ -81,20 +96,6 @@ public:
     // 用于处理 GATT 事件
     static int gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                    struct ble_gatt_access_ctxt *ctxt, void *arg);
-
-    // // 用于处理 GATT 服务注册事件
-    // // 回调函数- Gatt服务器注册
-    // static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg);
-    // // 回调函数 - GATT 服务器初始化
-    // static void gatt_svr_init(void);
-    // // 回调函数 - BLE 低功耗蓝牙广播
-    // static void ble_advertise(void);
-    // // 回调函数 - BLE开启同步
-    // static void ble_on_sync(void);
-    // // 回调函数 - 
-    // static void ble_on_reset(int reason);
-    // static void ble_host_task(void *param);
-    // static int ble_gap_event(struct ble_gap_event *event, void *arg);
 
 
     // 用于处理 GATT 服务注册事件
@@ -173,6 +174,12 @@ public:
 private:
     BleConfig() = default;
     ~BleConfig() = default;
+
+    // 任务状态管理
+    static TaskHandle_t ble_host_task_handle;    // 用于存储任务句柄，
+    static volatile bool ble_host_task_running;  // 用于指示任务是否正在运行
+    static volatile ble_task_state_t ble_host_task_state;   // 用于存储任务状态
+
 };
 
 // 声明外部存储回调函数（如果需要持久化绑定信息）
