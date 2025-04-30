@@ -14,3 +14,4 @@ main/assets/lang_config.h
 .log/
 sdkconfig
 sdkconfig.old
+__pycache__/
