@@ -20,8 +20,9 @@
         <text class="userinfo-nickname">{{userInfo.nickName}}</text>
       </block>
     </view>
-    <view class="usermotto">
-      <text class="user-motto">{{motto}}</text>
+    <view class="action-area">
+      <button class="config-btn" bindtap="gotoConfig">开始配网</button>
+      <text class="tip-text">点击按钮开始蓝牙配网</text>
     </view>
   </view>
 </scroll-view>

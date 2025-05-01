@@ -1,0 +1,77 @@
+<!--pages/ble-config/ble-config.wxml-->
+<view class="container">
+  <!-- 设备扫描区域 -->
+  <view class="scan-section" wx:if="{{!connected}}">
+    <view class="section-title">请选择设备</view>
+    <view class="device-list">
+      <view class="device-item" 
+            wx:for="{{devices}}" 
+            wx:key="deviceId" 
+            bindtap="connectDevice" 
+            data-device-id="{{item.deviceId}}">
+        <view class="device-info">
+          <view class="device-name">{{item.name || item.localName || '未知设备'}}</view>
+          <view class="device-id">设备ID: {{item.deviceId}}</view>
+        </view>
+        <view class="device-rssi">信号: {{item.RSSI}}dBm</view>
+      </view>
+      <view class="no-devices" wx:if="{{devices.length === 0}}">
+        <text>{{scanning ? '正在搜索设备...' : '未发现设备'}}</text>
+      </view>
+    </view>
+    <button class="refresh-btn" bindtap="refreshDevices" loading="{{scanning}}">
+      {{scanning ? '正在扫描' : '刷新设备'}}
+    </button>
+  </view>
+
+  <!-- 配网表单区域 -->
+  <view class="config-section" wx:if="{{connected}}">
+    <view class="section-title">WiFi配置</view>
+    <view class="input-group">
+      <view class="input-item">
+        <text class="input-label">WiFi名称</text>
+        <input class="input-field" 
+               type="text" 
+               placeholder="请输入WiFi名称" 
+               value="{{ssid}}" 
+               bindinput="onSsidInput"
+               disabled="{{connecting}}"/>
+      </view>
+      <view class="input-item">
+        <text class="input-label">WiFi密码</text>
+        <view class="password-input">
+          <input class="input-field" 
+                 type="{{showPassword ? 'text' : 'password'}}" 
+                 placeholder="请输入WiFi密码" 
+                 value="{{password}}" 
+                 bindinput="onPasswordInput"
+                 disabled="{{connecting}}"/>
+          <view class="password-toggle" bindtap="togglePasswordVisibility">
+            <image class="eye-icon" 
+                   src="/assets/{{showPassword ? 'eye-open.svg' : 'eye-close.svg'}}"/>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 状态显示 -->
+    <view class="status-section" wx:if="{{statusMessage}}">
+      <text class="status-text {{hasError ? 'error' : ''}}">{{statusMessage}}</text>
+    </view>
+
+    <!-- 操作按钮 -->
+    <view class="button-group">
+      <button class="submit-btn" 
+              bindtap="submitConfig" 
+              loading="{{connecting}}" 
+              disabled="{{connecting}}">
+        {{connecting ? '正在配网...' : '开始配网'}}
+      </button>
+      <button class="disconnect-btn" 
+              bindtap="disconnectBle" 
+              disabled="{{connecting}}">
+        断开连接
+      </button>
+    </view>
+  </view>
+</view>

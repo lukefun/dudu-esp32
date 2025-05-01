@@ -46,4 +46,11 @@ Page({
       }
     })
   },
+
+  // 跳转到配网页面
+  gotoConfig() {
+    wx.navigateTo({
+      url: '/pages/ble-config/ble-config'
+    })
+  },
 })
