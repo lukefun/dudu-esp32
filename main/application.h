@@ -34,17 +34,17 @@
 #define AUDIO_OUTPUT_READY_EVENT (1 << 2)
 #define CHECK_NEW_VERSION_DONE_EVENT (1 << 3)
 
-enum DeviceState {
-    kDeviceStateUnknown,
-    kDeviceStateStarting,
-    kDeviceStateWifiConfiguring,
-    kDeviceStateIdle,
-    kDeviceStateConnecting,
-    kDeviceStateListening,
-    kDeviceStateSpeaking,
-    kDeviceStateUpgrading,
-    kDeviceStateActivating,
-    kDeviceStateFatalError
+enum DeviceState {  // 设备状态枚举，用于表示设备当前的工作状态
+    kDeviceStateUnknown,    // 未知状态
+    kDeviceStateStarting,   // 启动中
+    kDeviceStateWifiConfiguring,    // 配网中
+    kDeviceStateIdle,       // 空闲状态
+    kDeviceStateConnecting, // 连接中
+    kDeviceStateListening,  // 监听中
+    kDeviceStateSpeaking,   // 说话中
+    kDeviceStateUpgrading,  // 升级中  
+    kDeviceStateActivating,  // 激活中
+    kDeviceStateFatalError  // 致命错误
 };
 
 #define OPUS_FRAME_DURATION_MS 60
