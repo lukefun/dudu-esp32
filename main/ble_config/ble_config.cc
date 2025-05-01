@@ -22,13 +22,16 @@ TaskHandle_t BleConfig::ble_host_task_handle = nullptr;
 volatile bool BleConfig::ble_host_task_running = true;
 volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;
 
-// 获取当前时间字符串
+// 获取当前时间字符串，包含毫秒
 static std::string GetTimeString() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     struct tm* tm_info = localtime(&tv.tv_sec);
-    char buffer[32];
-    strftime(buffer, sizeof(buffer), "[%H:%M:%S]", tm_info);
+    char buffer[64];
+    strftime(buffer, sizeof(buffer), "[%H:%M:%S.", tm_info);
+    // 添加毫秒部分（确保有足够空间：最多3位数字+']'+\0 = 5字节）
+    size_t len = strlen(buffer);
+    snprintf(buffer + len, sizeof(buffer) - len, "%03ld]", tv.tv_usec / 1000);
     return std::string(buffer);
 }
 
@@ -736,12 +739,12 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
     }
 }
 
-// 新增：完整去初始化BLE模块的实现
 void BleConfig::Deinitialize() {
-    ESP_LOGI(TAG, "%s 开始完整去初始化BLE模块...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Deinitialize：开始完整去初始化BLE模块...", GetTimeString().c_str());
 
     // 1. 先停止所有BLE活动
     StopAdvertising();
+    ESP_LOGI(TAG, "%s @Deinitialize：停止所有BLE活动完成...", GetTimeString().c_str());
 
     // 2. 等待所有BLE操作完成
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -749,32 +752,83 @@ void BleConfig::Deinitialize() {
     // 3. 从看门狗中移除任务
     if (ble_host_task_handle != NULL) {
         esp_task_wdt_delete(ble_host_task_handle);
-        ble_host_task_handle = NULL;
+        ESP_LOGI(TAG, "%s @Deinitialize：从看门狗中移除BLE任务完成...", GetTimeString().c_str());
     }
 
     // 4. 标记任务需要退出
     ble_host_task_running = false;
 
-    // 5. 等待任务自行退出
+    // 5. 等待任务自行退出，添加超时机制
+    const TickType_t xMaxWaitTicks = pdMS_TO_TICKS(3000); // 最多等待3秒
+    TickType_t xStartTicks = xTaskGetTickCount();
+    
     while (ble_host_task_state != BLE_TASK_STOPPED) {
         vTaskDelay(pdMS_TO_TICKS(10));
+        
+        // 检查是否超时
+        if ((xTaskGetTickCount() - xStartTicks) > xMaxWaitTicks) {
+            ESP_LOGW(TAG, "%s @Deinitialize：等待任务退出超时，尝试强制结束...", GetTimeString().c_str());
+            
+            if (ble_host_task_handle != NULL) {
+                // 获取任务状态
+                eTaskState task_state = eTaskGetState(ble_host_task_handle);
+                ESP_LOGI(TAG, "%s @Deinitialize：任务当前状态: %d", GetTimeString().c_str(), task_state);
+                
+                // 强制删除任务
+                vTaskDelete(ble_host_task_handle);
+                ESP_LOGI(TAG, "%s @Deinitialize：已强制删除任务", GetTimeString().c_str());
+                
+                // 重置任务相关变量
+                ble_host_task_handle = NULL;
+                ble_host_task_state = BLE_TASK_STOPPED;
+            }
+            break;
+        }
+        
+        ESP_LOGI(TAG, "%s @Deinitialize：等待BLE任务退出... (已等待 %d ms)", 
+                 GetTimeString().c_str(), 
+                 (int)((xTaskGetTickCount() - xStartTicks) * portTICK_PERIOD_MS));
+    }
+    
+    ESP_LOGI(TAG, "%s @Deinitialize：BLE任务退出完成", GetTimeString().c_str());
+
+    // 6. 去初始化NimBLE，添加重试机制
+    const int MAX_DEINIT_RETRIES = 3;
+    int deinit_retry_count = 0;
+    int rc;
+    
+    do {
+        rc = nimble_port_deinit();
+        if (rc == 0) {
+            ESP_LOGI(TAG, "%s @Deinitialize：NimBLE模块去初始化成功", GetTimeString().c_str());
+            break;
+        }
+        
+        ESP_LOGW(TAG, "%s @Deinitialize：NimBLE模块去初始化失败: %d，重试次数: %d/%d", 
+                 GetTimeString().c_str(), rc, deinit_retry_count + 1, MAX_DEINIT_RETRIES);
+        
+        // 短暂延时后重试
+        vTaskDelay(pdMS_TO_TICKS(100));
+        deinit_retry_count++;
+        
+    } while (deinit_retry_count < MAX_DEINIT_RETRIES);
+
+    // 如果去初始化失败，记录错误并尝试强制清理
+    if (rc != 0) {
+        ESP_LOGE(TAG, "%s @Deinitialize：NimBLE模块去初始化最终失败，将尝试强制清理资源", GetTimeString().c_str());
+        
+        // 这里可以添加紧急清理代码，比如重置关键状态变量
+        // TODO: 根据具体项目需求添加额外的清理步骤
     }
 
-    // 6. 去初始化NimBLE，调用 NimBLE 移植层提供的去初始化函数
-    int rc = nimble_port_deinit();
-    if (rc == 0) {
-        ESP_LOGI(TAG, "%s NimBLE模块去初始化成功", GetTimeString().c_str());
-    } else {
-        ESP_LOGE(TAG, "%s NimBLE模块去初始化失败: %d", GetTimeString().c_str(), rc);
-    }
-
-    // 7. 释放资源
+    // 7. 释放资源（即使去初始化失败也需要执行）
     if (ble_host_task_handle != NULL) {
         vTaskDelete(ble_host_task_handle);
         ble_host_task_handle = NULL;
+        ESP_LOGI(TAG, "%s @Deinitialize：释放BLE任务资源完成", GetTimeString().c_str());
     }
 
     // 清空全局实例指针，防止野指针
     g_ble_config_instance = nullptr; // <<< 置空，避免在 BLE 已经释放后，静态回调函数（如果被意外调用）使用无效的指针。
-    ESP_LOGI(TAG, "%s BLE模块去初始化完成", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Deinitialize：BLE模块去初始化完成", GetTimeString().c_str());
 }
