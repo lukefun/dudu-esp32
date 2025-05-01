@@ -26,15 +26,31 @@
 #include <ssid_manager.h>
 #include <sys/time.h>
 
+#include <iostream>
+#include <string>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+
 static const char *TAG = "WifiBoard";    // <--- 确保 TAG 已定义
 
-// 获取当前时间字符串
+
 static std::string GetTimeString() {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    struct tm* tm_info = localtime(&tv.tv_sec);
-    char buffer[32];
-    strftime(buffer, sizeof(buffer), "[%H:%M:%S]", tm_info);
+    // 获取当前时间点
+    auto now = std::chrono::system_clock::now();
+    auto now_time_t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+    // 转换为本地时间
+    tm* tm_info = localtime(&now_time_t);
+
+    // 格式化时间字符串（含毫秒）
+    char buffer[64];
+    strftime(buffer, sizeof(buffer), "[%H:%M:%S", tm_info);
+    int len = strlen(buffer);
+    snprintf(buffer + len, sizeof(buffer) - len, ".%03d]", static_cast<int>(ms.count()));
+
     return std::string(buffer);
 }
 
@@ -54,55 +70,52 @@ std::string WifiBoard::GetBoardType() {
     return "wifi";
 }
 
-// 修改 EnterWifiConfigMode 函数，添加 BLE 配网初始化
+// 进入 WiFi 配网模式
 void WifiBoard::EnterWifiConfigMode() {
-    ESP_LOGI(TAG, "%s 进入 WiFi 配网模式", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：进入 WiFi 配网模式", GetTimeString().c_str());
 
     // 在进入配网模式前，检查内存状态
     int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "%s 进入配网模式前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
+    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：进入配网模式前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
             GetTimeString().c_str(), free_sram, min_free_sram);
 
     // 设置设备状态为 WiFi配网中
     auto& application = Application::GetInstance();
-    
-    application.SetDeviceState(kDeviceStateWifiConfiguring);
-    ESP_LOGI(TAG, "%s 设备状态已设置为: WiFi配网中", GetTimeString().c_str());
+    application.SetDeviceState(kDeviceStateWifiConfiguring);    // <--- 确保设置了正确的设备状态
+    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：设备状态已设置为: WiFi配网中", GetTimeString().c_str());
 
     // 初始化并启动 BLE 配网
     auto& ble_config = BleConfig::GetInstance();
     
-    // 设置 WiFi 凭据接收回调
-    ESP_LOGI(TAG, "%s 设置 WiFi 凭据接收回调", GetTimeString().c_str());
+    // 设置 WiFi 凭据接收回调，在收到凭据时调用，并在收到凭据时暂存
     ble_config.SetCredentialsReceivedCallback([this](const std::string& ssid, const std::string& password) {
-        ESP_LOGI(TAG, "%s 收到 WiFi 凭据 - SSID: %s, 密码长度: %d", GetTimeString().c_str(), ssid.c_str(), password.length());
+        ESP_LOGI(TAG, "%s @EnterWifiConfigMode：收到 WiFi 凭据 - SSID: %s, 密码长度: %d", GetTimeString().c_str(), ssid.c_str(), password.length());
         ble_ssid_ = ssid;
         ble_password_ = password;
-        ESP_LOGI(TAG, "%s WiFi 凭据已暂存，等待连接命令", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi 凭据已暂存，等待连接命令", GetTimeString().c_str());
         // 不直接保存和重启，等收到连接命令后再处理
     });
 
     // 设置开始连接 WiFi 的回调，在收到连接命令时调用，并在连接成功后调用 ConnectWifiByBle 函数，并传递凭据
-    ESP_LOGI(TAG, "%s 设置连接 WiFi 回调", GetTimeString().c_str());
     ble_config.SetConnectWifiCallback([this]() {
-        ESP_LOGI(TAG, "%s 收到连接 WiFi 命令", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @EnterWifiConfigMode：收到连接 WiFi 命令", GetTimeString().c_str());
         
         // 在执行连接WiFi前增加内存检查
         int free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        ESP_LOGI(TAG, "%s 连接WiFi前内存状态: %d 字节", GetTimeString().c_str(), free_heap);
+        ESP_LOGI(TAG, "%s @EnterWifiConfigMode：连接WiFi前内存状态: %d 字节", GetTimeString().c_str(), free_heap);
         
-
-        // 显示连接WiFi提示
+        // 发送连接状态，表示开始连接
         BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTING);
 
         // 检查凭据
         if (ble_ssid_.empty() || ble_password_.empty()) {
-            ESP_LOGW(TAG, "BLE配网凭据为空，无法连接");
+            ESP_LOGW(TAG, "@EnterWifiConfigMode：BLE配网凭据为空，无法连接");
             BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_FAIL_SSID);
             return;
         }
-        // 优化：收到连接命令后，先停止BLE广播，延迟一段时间再启动WiFi，避免任务高峰重叠
+
+        // 收到连接命令后，先停止BLE广播，延迟一段时间再启动WiFi，避免任务高峰重叠
         BleConfig::GetInstance().StopAdvertising();
         ESP_LOGI(TAG, "%s 已停止BLE广播，准备延迟启动WiFi", GetTimeString().c_str());
         
@@ -215,6 +228,7 @@ void WifiBoard::EnterWifiConfigMode() {
     hint += "DuDu-BLE"; // 确保与BLE广播名称一致
     ESP_LOGI(TAG, "%s 配网提示: %s", GetTimeString().c_str(), hint.c_str());
 
+    // 显示 BLE 配网提示并播放提示音：“进入配网模式”
     ESP_LOGI(TAG, "%s 显示配网提示并播放提示音", GetTimeString().c_str());
     application.Alert(Lang::Strings::BLE_CONFIG_MODE, hint.c_str(), "", Lang::Sounds::P3_WIFICONFIG);
 
@@ -223,24 +237,25 @@ void WifiBoard::EnterWifiConfigMode() {
     while (true) {
         int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-        ESP_LOGI(TAG, "%s 内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", GetTimeString().c_str(), free_sram, min_free_sram);
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：等待配网:内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", GetTimeString().c_str(), free_sram, min_free_sram);
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
 // 新增：BLE配网流程中的WiFi连接实现 - 优化内存使用，避免栈溢出
 void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& password) {
-    ESP_LOGI(TAG, "%s BLE配网流程：准备连接WiFi SSID: %s", GetTimeString().c_str(), ssid.c_str());
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE配网流程 - 准备连接WiFi SSID: %s", GetTimeString().c_str(), ssid.c_str());
     
     // 检查当前内存状态
     int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "%s 连接WiFi前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：连接WiFi前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
              GetTimeString().c_str(), free_sram, min_free_sram);
     
     // 先保存WiFi凭据到NVS
     auto& ssid_manager = SsidManager::GetInstance();
     ssid_manager.AddSsid(ssid, password);
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi凭据已保存到NVS", GetTimeString().c_str());
     
     // 短暂延时，让BLE任务有时间处理完成当前操作
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -248,36 +263,38 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     // 添加认证信息
     auto& wifi_station = WifiStation::GetInstance();
     wifi_station.AddAuth(std::string(ssid), std::string(password));
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi认证信息已添加", GetTimeString().c_str());
     
     // 再次检查内存状态
     free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "%s 启动WiFi前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：启动WiFi前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
              GetTimeString().c_str(), free_sram, min_free_sram);
     
     // 如果可用内存过低，尝试释放一些内存
     if (free_sram < 60000) {
-        ESP_LOGW(TAG, "%s 可用内存较低，尝试释放资源...", GetTimeString().c_str());
+        ESP_LOGW(TAG, "%s @ConnectWifiByBle：可用内存较低，尝试释放资源...", GetTimeString().c_str());
         // 停止BLE广播以释放资源
         BleConfig::GetInstance().StopAdvertising();
         // 强制执行垃圾回收
         heap_caps_check_integrity_all(true);
         // 再次检查内存
         free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        ESP_LOGI(TAG, "%s 释放资源后内存状态 - 当前可用: %u 字节", GetTimeString().c_str(), free_sram);
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：释放资源后内存状态 - 当前可用: %u 字节", GetTimeString().c_str(), free_sram);
     }
     
     // 重置任务看门狗，防止WiFi初始化过程中触发看门狗超时
     esp_task_wdt_reset();
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（1），防止WiFi初始化过程中触发看门狗超时", GetTimeString().c_str());
     
     // 启动WiFi
     wifi_station.Start();
-    
-    // 短暂延时，让WiFi任务有时间初始化
-    vTaskDelay(pdMS_TO_TICKS(500));
-    
+    vTaskDelay(pdMS_TO_TICKS(500)); // 短暂延时，让WiFi任务有时间初始化
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi已启动", GetTimeString().c_str());
+
     // 重置任务看门狗
     esp_task_wdt_reset();
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（2），防止WiFi连接过程中触发看门狗超时", GetTimeString().c_str());
     
     // 等待连接结果，使用更长的超时时间
     ESP_LOGI(TAG, "%s 等待WiFi连接结果，超时时间: 20秒", GetTimeString().c_str());
@@ -285,9 +302,10 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
 
     // 连接过程完成，再次重置看门狗
     esp_task_wdt_reset();
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（3），防止WiFi连接过程中触发看门狗超时", GetTimeString().c_str());
 
     if (connected) {
-        ESP_LOGI(TAG, "%s WiFi连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
         // 发送连接成功状态
         BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTED);
         // 短暂延时确保状态发送成功
@@ -296,9 +314,9 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
         BleConfig::GetInstance().Deinitialize();
         // 延时后重启
         vTaskDelay(pdMS_TO_TICKS(1000));
-        esp_restart();
+        esp_restart();  // 重启设备
     } else {
-        ESP_LOGW(TAG, "%s WiFi连接失败", GetTimeString().c_str());
+        ESP_LOGW(TAG, "%s @ConnectWifiByBle：WiFi连接失败，重新进入配网状态！", GetTimeString().c_str());
         // 停止WiFi连接
         wifi_station.Stop();
         
@@ -310,6 +328,7 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
         }
         
         // 确保BLE模块处于可用状态
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：检查 BLE 是否正在广播", GetTimeString().c_str());
         if (!BleConfig::GetInstance().IsAdvertising()) {
             ESP_LOGI(TAG, "%s 重新启动BLE广播", GetTimeString().c_str());
             BleConfig::GetInstance().StartAdvertising();
@@ -318,7 +337,7 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
         }
         
         // 发送失败状态并等待足够长的时间确保发送成功
-        ESP_LOGI(TAG, "%s 发送WiFi连接失败状态: %d", GetTimeString().c_str(), status);
+        ESP_LOGW(TAG, "%s 发送WiFi连接失败状态: %d", GetTimeString().c_str(), status);
         BleConfig::GetInstance().SendWifiStatus(status);
         vTaskDelay(pdMS_TO_TICKS(500));
         
@@ -343,54 +362,54 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
 }
 
 void WifiBoard::StartNetwork() {
-
+    // 获取应用实例
     auto& application = Application::GetInstance();
-    ESP_LOGI(TAG, "%s 开始启动网络", GetTimeString().c_str()); // 添加日志
+    ESP_LOGI(TAG, "%s @StartNetwork：开始启动网络", GetTimeString().c_str()); // 添加日志
 
     // 检查 NVS 中是否有 WiFi 配置
-    ESP_LOGI(TAG, "%s 检查 NVS 中的 WiFi 凭据...", GetTimeString().c_str());
-    auto& ssid_manager = SsidManager::GetInstance();    // <--- 确保 SsidManager 已定义
-    auto ssid_list = ssid_manager.GetSsidList();        
-    bool nvs_is_empty = ssid_list.empty();              // 记录 NVS 是否为空
+    ESP_LOGI(TAG, "%s @StartNetwork：检查 NVS 中的 WiFi 凭据...", GetTimeString().c_str());
+    auto& ssid_manager = SsidManager::GetInstance();    // 获取 SSID 管理器实例
+    auto ssid_list = ssid_manager.GetSsidList();        // 获取 SSID 列表
+    bool nvs_is_empty = ssid_list.empty();              // 检查 NVS 是否为空
 
-    ESP_LOGI(TAG, "%s NVS 中 SSID 数量: %d", GetTimeString().c_str(), ssid_list.size()); // 添加日志，显示 SSID 数量
+    ESP_LOGI(TAG, "%s @StartNetwork：NVS 中 SSID 数量: %d", GetTimeString().c_str(), ssid_list.size()); // 添加日志，显示 SSID 数量
 
     // 检查是否强制进入配网模式 (例如长按按钮触发)
     if (wifi_config_mode_) {
-        ESP_LOGI(TAG, "%s 检测到强制配网标志，直接进入配网模式", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @StartNetwork：检测到强制配网标志，直接进入配网模式", GetTimeString().c_str());
         EnterWifiConfigMode(); // 进入 BLE 配网模式
         return; // 不再继续尝试连接
     }
 
-    // 如果 NVS 不为空，尝试连接 WiFi
+    // 如果 NVS 为空，进入 BLE 配网模式
     bool connected = false;
+    // 如果 NVS 非空，尝试连接已保存的 WiFi
     if (!nvs_is_empty) {
-        ESP_LOGI(TAG, "%s NVS 非空，尝试连接已保存的 WiFi...", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @StartNetwork：NVS 非空，尝试连接已保存的 WiFi...", GetTimeString().c_str());
         auto& wifi_station = WifiStation::GetInstance();
  
-        // ... (保留原有的 OnScanBegin, OnConnect, OnConnected 回调设置) ...
         // 设置 WiFi 扫描开始回调
         wifi_station.OnScanBegin([this]() {
-            ESP_LOGI(TAG, "%s WiFi 扫描开始", GetTimeString().c_str());
-            auto display = Board::GetInstance().GetDisplay();
-            if (display) display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000); // 添加判空
+            ESP_LOGI(TAG, "%s @StartNetwork：WiFi 扫描开始", GetTimeString().c_str());
+            auto display = Board::GetInstance().GetDisplay();   // 获取显示实例
+            if (display) display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000); // 显示扫描提示，持续 30 秒
         });
 
         // 设置 WiFi 连接开始回调
         wifi_station.OnConnect([this](const std::string& ssid) {
-            ESP_LOGI(TAG, "%s 开始连接 WiFi: %s", GetTimeString().c_str(), ssid.c_str());
-            auto display = Board::GetInstance().GetDisplay();
-            if (display) { // 添加判空
-                std::string notification = Lang::Strings::CONNECT_TO;
-                notification += ssid;
-                notification += "...";
-                display->ShowNotification(notification.c_str(), 30000);
+            ESP_LOGI(TAG, "%s @StartNetwork：开始连接 WiFi: %s", GetTimeString().c_str(), ssid.c_str());
+            auto display = Board::GetInstance().GetDisplay();   // 获取显示实例
+            if (display) {
+                std::string notification = Lang::Strings::CONNECT_TO;    // 连接提示
+                notification += ssid;    // 添加 SSID
+                notification += "...";   // 添加连接中
+                display->ShowNotification(notification.c_str(), 30000); // 显示连接提示，持续 30 秒
             }
         });
 
         // 设置 WiFi 连接成功回调
         wifi_station.OnConnected([this](const std::string& ssid) {
-            ESP_LOGI(TAG, "%s WiFi 连接成功: %s", GetTimeString().c_str(), ssid.c_str());
+            ESP_LOGI(TAG, "%s @StartNetwork：WiFi 连接成功: %s", GetTimeString().c_str(), ssid.c_str());
             auto display = Board::GetInstance().GetDisplay();
             if (display) { // 添加判空
                 std::string notification = Lang::Strings::CONNECTED_TO;
@@ -431,9 +450,8 @@ void WifiBoard::StartNetwork() {
     }
 
     // 进入 BLE 配网模式
-    wifi_config_mode_ = true; // 标记进入配网模式
-    EnterWifiConfigMode();
-    
+    wifi_config_mode_ = true;   // 标记进入配网模式
+    EnterWifiConfigMode();      // 进入 BLE 配网模式
 }
 
 Http* WifiBoard::CreateHttp() {
