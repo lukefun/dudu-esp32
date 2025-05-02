@@ -2,6 +2,8 @@
 #define WIFI_BOARD_H
 
 #include "board.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h" // 添加 FreeRTOS 任务头文件
 
 // ble-WiFi 连接失败原因枚举
 enum ble_wifi_reason_t { // 改名为 ble_wifi_reason_t
@@ -26,16 +28,30 @@ protected:
     std::string ble_ssid_;
     std::string ble_password_;
 
+    // 新增：配网超时任务句柄
+    TaskHandle_t wifi_timeout_task_handle_ = nullptr;
+    // 新增：配网超时时间（分钟）
+    int config_timeout_minutes_ = 5; // 默认5分钟
+
+private:
+    // 新增：重构 EnterWifiConfigMode 的辅助函数
+    bool SetupBleCallbacks();                   // 设置BLE回调
+    bool InitializeAndStartBleAdvertising();    // 初始化并开始BLE广播
+    void UpdateUiForBleConfig();                // 更新UI以显示BLE配网状态
+    bool StartWifiConfigTimeoutTask();          // 启动配网超时任务
+
 public:
-    virtual std::string GetBoardType() override;
-    virtual void StartNetwork() override;
-    virtual Http* CreateHttp() override;
-    virtual WebSocket* CreateWebSocket() override;
-    virtual Mqtt* CreateMqtt() override;
-    virtual Udp* CreateUdp() override;
-    virtual const char* GetNetworkStateIcon() override;
-    virtual void SetPowerSaveMode(bool enabled) override;
-    virtual void ResetWifiConfiguration();
+    virtual std::string GetBoardType() override;    // 新增：返回板卡类型
+    virtual void StartNetwork() override;           // 新增：开始网络
+    virtual Http* CreateHttp() override;            // 新增：创建HTTP对象
+    virtual WebSocket* CreateWebSocket() override;  // 新增：创建WebSocket对象
+    virtual Mqtt* CreateMqtt() override;            // 新增：创建MQTT对象
+    virtual Udp* CreateUdp() override;              // 新增：创建UDP对象
+    virtual const char* GetNetworkStateIcon() override; // 新增：获取网络状态图标
+    virtual void SetPowerSaveMode(bool enabled) override;   // 新增：设置省电模式
+    virtual void ResetWifiConfiguration();            // 新增：重置WiFi配置
+    int GetConfigTimeoutMinutes() const { return config_timeout_minutes_; } // 新增：获取配网超时时间
+    void ResetTimeoutTaskHandle() { wifi_timeout_task_handle_ = nullptr; } // 新增：重置超时任务句柄
 };
 
 #endif // WIFI_BOARD_H
