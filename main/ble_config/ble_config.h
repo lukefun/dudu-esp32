@@ -33,6 +33,9 @@ typedef enum {
 // 定义控制命令码 (从手机接收)
 #define WIFI_CONTROL_CMD_CONNECT 0xFF
 
+// BLE 设备名常量定义
+constexpr const char* kBleDeviceName = "DuDu-BLE";
+
 class BleConfig {
 public:
     // 使用单例模式方便全局访问
@@ -186,3 +189,5 @@ private:
  extern "C" void ble_store_config_init(void);
 
 #endif // BLE_CONFIG_H
+
+
