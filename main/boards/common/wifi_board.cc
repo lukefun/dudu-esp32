@@ -223,6 +223,8 @@ bool WifiBoard::StartWifiConfigTimeoutTask() {
 // 进入 WiFi 配网模式 (同步实现)
 void WifiBoard::EnterWifiConfigMode() {
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：进入 WiFi 配网模式 (同步版)", GetTimeString().c_str());
+    // 注册当前任务到看门狗（最佳实践）
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
     // 1. 准备阶段：内存检查和状态设置
     int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -273,6 +275,8 @@ void WifiBoard::EnterWifiConfigMode() {
             // 连接 WiFi
             ConnectWifiByBle(ble_ssid_, ble_password_);
             ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi 连接流程已执行", GetTimeString().c_str());
+            // 注销当前任务出看门狗
+            esp_task_wdt_delete(NULL);
             return; // 连接流程已执行，退出函数
         }
 
@@ -283,6 +287,8 @@ void WifiBoard::EnterWifiConfigMode() {
 
     // 超时处理
     ESP_LOGW(TAG, "%s @EnterWifiConfigMode：配网超时 (%d 分钟)", GetTimeString().c_str(), config_timeout_minutes_);
+    // 注销当前任务出看门狗
+    esp_task_wdt_delete(NULL);
     
     // 停止 BLE 并清理资源
     BleConfig::GetInstance().StopAdvertising();
