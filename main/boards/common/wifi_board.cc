@@ -421,15 +421,15 @@ void WifiBoard::StartNetwork() {
 
         wifi_station.Start();   /// <--- 启动 WiFi 连接
         // 等待连接结果
-        ESP_LOGI(TAG, "%s 等待 WiFi 连接，超时时间: 60 秒", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @StartNetwork：等待 WiFi 连接，超时时间: 60 秒", GetTimeString().c_str());
         connected = wifi_station.WaitForConnected(60 * 1000);
         // 检查连接结果
         if (connected) {
-            ESP_LOGI(TAG, "%s WiFi 连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
+            ESP_LOGI(TAG, "%s @StartNetwork：WiFi 连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
             // --- 连接成功，正常启动 ---
             return; // 正常启动，不进入配网
         } else {
-            ESP_LOGW(TAG, "尝试连接已保存的 WiFi 失败。");
+            ESP_LOGW(TAG, "@StartNetwork：尝试连接已保存的 WiFi 失败。");
             wifi_station.Stop(); // 停止尝试连接
 
             // >>>>> 修改点: 如果尝试连接已保存的 Wi-Fi 失败，显式进入配网模式 <<<<<
@@ -438,15 +438,15 @@ void WifiBoard::StartNetwork() {
     }
 
     // --- 执行到这里，说明：NVS 为空 或 NVS 非空但连接失败 ---
-    ESP_LOGI(TAG, "%s 需要进入配网模式 (NVS 是否为空: %s, 连接是否成功: %s)", GetTimeString().c_str(), nvs_is_empty ? "是" : "否", connected ? "是" : "否");
+    ESP_LOGI(TAG, "%s @StartNetwork：需要进入配网模式 (NVS 是否为空: %s, 连接是否成功: %s)", GetTimeString().c_str(), nvs_is_empty ? "是" : "否", connected ? "是" : "否");
 
     // 仅在 NVS *完全为空* 时播放提示音
     if (nvs_is_empty) {
-        ESP_LOGI(TAG, "%s NVS 为空，播放配网提示音", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @StartNetwork：NVS 为空，播放配网提示音", GetTimeString().c_str());
         application.PlaySound(Lang::Sounds::P3_WIFI_CONFIG_REQUIRED);
         vTaskDelay(pdMS_TO_TICKS(500)); // 稍作延时
     } else {
-        ESP_LOGI(TAG, "%s NVS 非空但连接失败，不播放初始提示音，直接进入配网", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @StartNetwork：NVS 非空但连接失败，不播放初始提示音，直接进入配网", GetTimeString().c_str());
     }
 
     // 进入 BLE 配网模式
