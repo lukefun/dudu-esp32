@@ -66,7 +66,7 @@ static char* bytes_to_hex(const uint8_t* bytes, size_t len) {
 
 static void parse_all_uuids() {
     int rc;
-    ESP_LOGI(TAG, "%s 开始解析UUID...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @parse_all_uuids: 开始解析UUID...", GetTimeString().c_str());
 
     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_svc_wifi_config_uuid.u, WIFI_CONFIG_SERVICE_UUID);
     assert(rc == 0);
@@ -77,7 +77,7 @@ static void parse_all_uuids() {
     rc = ble_uuid_from_str((ble_uuid_any_t*)&gatt_svr_chr_control_status_uuid.u, CONTROL_STATUS_CHAR_UUID);
     assert(rc == 0);
     
-    ESP_LOGI(TAG, "%s UUID解析完成", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @parse_all_uuids: UUID解析完成", GetTimeString().c_str());
 }
 
 static const struct ble_gatt_chr_def gatt_svr_characteristics[] = {
@@ -130,25 +130,25 @@ void BleConfig::gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *
     char buf[BLE_UUID_STR_LEN];
     switch (ctxt->op) {
     case BLE_GATT_REGISTER_OP_SVC:
-        ESP_LOGI(TAG, "registered service %s with handle=0x%04x",
-               ble_uuid_to_str(ctxt->svc.svc_def->uuid, buf),
+        ESP_LOGI(TAG, "%s @gatt_svr_register_cb: registered service %s with handle=0x%04x",
+               GetTimeString().c_str(), ble_uuid_to_str(ctxt->svc.svc_def->uuid, buf),
                ctxt->svc.handle);
         break;
     case BLE_GATT_REGISTER_OP_CHR:
-        ESP_LOGI(TAG, "registering characteristic %s with def_handle=0x%04x val_handle=0x%04x",
-               ble_uuid_to_str(ctxt->chr.chr_def->uuid, buf),
+        ESP_LOGI(TAG, "%s @gatt_svr_register_cb: registering characteristic %s with def_handle=0x%04x val_handle=0x%04x",
+               GetTimeString().c_str(), ble_uuid_to_str(ctxt->chr.chr_def->uuid, buf),
                ctxt->chr.def_handle,
                ctxt->chr.val_handle);
                
         if (g_ble_config_instance && 
             ble_uuid_cmp(ctxt->chr.chr_def->uuid, &gatt_svr_chr_control_status_uuid.u) == 0) {
             g_ble_config_instance->status_val_handle_ = ctxt->chr.val_handle;
-            ESP_LOGI(TAG, "保存控制状态特征值句柄: 0x%04x", ctxt->chr.val_handle);
+            ESP_LOGI(TAG, "%s @gatt_svr_register_cb: 保存控制状态特征值句柄: 0x%04x", GetTimeString().c_str(), ctxt->chr.val_handle);
         }
         break;
     case BLE_GATT_REGISTER_OP_DSC:
-        ESP_LOGI(TAG, "registering descriptor %s with handle=0x%04x",
-               ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, buf),
+        ESP_LOGI(TAG, "%s @gatt_svr_register_cb: registering descriptor %s with handle=0x%04x",
+               GetTimeString().c_str(), ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, buf),
                ctxt->dsc.handle);
         break;
     default:
@@ -159,52 +159,52 @@ void BleConfig::gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *
 
 void BleConfig::Initialize() {
     g_ble_config_instance = this;   // 保存实例指针
-    ESP_LOGI(TAG, "%s 开始初始化BLE配网模块...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 开始初始化BLE配网模块...", GetTimeString().c_str());
 
     // 完全避免尝试清理资源的过程，直接初始化
-    ESP_LOGI(TAG, "%s 跳过清理步骤，直接初始化NimBLE", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 跳过清理步骤，直接初始化NimBLE", GetTimeString().c_str());
 
     // 1. 初始化NVS
-    ESP_LOGI(TAG, "%s 初始化NVS存储...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 初始化NVS存储...", GetTimeString().c_str());
     esp_err_t nvs_ret = nvs_flash_init();
 
     // 如果NVS分区已满或版本不匹配，则擦除重新初始化
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "%s NVS需要擦除", GetTimeString().c_str());
+        ESP_LOGW(TAG, "%s @Initialize: NVS需要擦除", GetTimeString().c_str());
         nvs_flash_erase();
         nvs_ret = nvs_flash_init();
     }
 
     if (nvs_ret != ESP_OK) {
-        ESP_LOGE(TAG, "%s NVS初始化失败: %s", GetTimeString().c_str(), esp_err_to_name(nvs_ret));
+        ESP_LOGE(TAG, "%s @Initialize: NVS初始化失败: %s", GetTimeString().c_str(), esp_err_to_name(nvs_ret));
         return;
     }
-    ESP_LOGI(TAG, "%s NVS初始化成功", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: NVS初始化成功", GetTimeString().c_str());
 
     // 2. 解析服务和特征UUID
-    ESP_LOGI(TAG, "%s 解析BLE服务UUID", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 解析BLE服务UUID", GetTimeString().c_str());
     parse_all_uuids();
 
     // 3. 打印当前内存状态
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    ESP_LOGI(TAG, "%s BLE初始化前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    ESP_LOGI(TAG, "%s @Initialize: BLE初始化前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
 
     // 检查内存是否足够
     if (free_heap < 60000) {
-        ESP_LOGW(TAG, "%s 可用内存较低，但仍将继续初始化", GetTimeString().c_str());
+        ESP_LOGW(TAG, "%s @Initialize: 可用内存较低，但仍将继续初始化", GetTimeString().c_str());
     }
 
     // 4. 初始化NimBLE
-    ESP_LOGI(TAG, "%s 初始化NimBLE端口", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 初始化NimBLE端口", GetTimeString().c_str());
     esp_err_t rc = nimble_port_init();
     if (rc != ESP_OK) {
-        ESP_LOGE(TAG, "%s NimBLE端口初始化失败: %d", GetTimeString().c_str(), rc);
+        ESP_LOGE(TAG, "%s @Initialize: NimBLE端口初始化失败: %d", GetTimeString().c_str(), rc);
         return;
     }
-    ESP_LOGI(TAG, "%s NimBLE端口初始化成功", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: NimBLE端口初始化成功", GetTimeString().c_str());
 
     // 5. 配置BLE安全参数
-    ESP_LOGI(TAG, "%s 配置BLE安全参数", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 配置BLE安全参数", GetTimeString().c_str());
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_mitm = 1;
@@ -214,29 +214,29 @@ void BleConfig::Initialize() {
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC;
 
     // 6. 设置回调函数
-    ESP_LOGI(TAG, "%s 设置BLE回调函数", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 设置BLE回调函数", GetTimeString().c_str());
     ble_hs_cfg.reset_cb = ble_on_reset;
     ble_hs_cfg.sync_cb = ble_on_sync;
     ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
     ble_hs_cfg.store_status_cb = NULL;
 
     // 7. 初始化GATT服务器
-    ESP_LOGI(TAG, "%s 初始化GATT服务器", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 初始化GATT服务器", GetTimeString().c_str());
     gatt_svr_init();
 
     // 8. 设置设备名称
-    ESP_LOGI(TAG, "%s 设置BLE设备名称", GetTimeString().c_str());
-    int name_rc = ble_svc_gap_device_name_set("DuDu-BLE");
+    ESP_LOGI(TAG, "%s @Initialize: 设置BLE设备名称", GetTimeString().c_str());
+    int name_rc = ble_svc_gap_device_name_set(kBleDeviceName);  //"DuDu-BLE"
     if (name_rc != 0) {
-        ESP_LOGW(TAG, "%s 设置设备名称失败: %d", GetTimeString().c_str(), name_rc);
+        ESP_LOGW(TAG, "%s @Initialize: 设置设备名称失败: %d", GetTimeString().c_str(), name_rc);
     }
 
     // 9. 初始化BLE存储
-    ESP_LOGI(TAG, "%s 初始化BLE存储", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 初始化BLE存储", GetTimeString().c_str());
     ble_store_config_init();
 
     // 10. 启动BLE主机任务
-    ESP_LOGI(TAG, "%s 创建BLE主机任务", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: 创建BLE主机任务", GetTimeString().c_str());
     xTaskCreatePinnedToCore(
         ble_host_task, 
         "ble_host_task",
@@ -250,7 +250,7 @@ void BleConfig::Initialize() {
     // 等待一小段时间，让BLE任务启动
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    ESP_LOGI(TAG, "%s BLE初始化完成", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Initialize: BLE初始化完成", GetTimeString().c_str());
 }
 
 int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -259,80 +259,80 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
     int rc = 0;
 
     if (!g_ble_config_instance) {
-        ESP_LOGE(TAG, "%s GATT访问失败: 全局实例不存在", GetTimeString().c_str());
+        ESP_LOGE(TAG, "%s @gatt_svr_chr_access: GATT访问失败: 全局实例不存在", GetTimeString().c_str());
         return BLE_ATT_ERR_UNLIKELY;
     }
 
     switch (ctxt->op) {
         case BLE_GATT_ACCESS_OP_WRITE_CHR: {
             uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
-            ESP_LOGI(TAG, "%s 收到特征值写入请求: %s, 数据长度: %d", GetTimeString().c_str(), char_name, data_len);
+            ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 收到特征值写入请求: %s, 数据长度: %d", GetTimeString().c_str(), char_name, data_len);
 
             // ==== 新增数据校验开始 ====
             // 控制命令必须为1字节
             if(strcmp(char_name, "control") == 0 && data_len != CONTROL_CMD_LEN) {
-                ESP_LOGE(TAG, "%s 控制命令长度无效: %d, 应为1字节", GetTimeString().c_str(), data_len);
+                ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 控制命令长度无效: %d, 应为1字节", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             }
             // SSID最大32字节
             if(strcmp(char_name, "ssid") == 0 && data_len > MAX_SSID_LEN) {
-                ESP_LOGE(TAG, "%s SSID长度过长: %d/32", GetTimeString().c_str(), data_len);
+                ESP_LOGE(TAG, "%s @gatt_svr_chr_access: SSID长度过长: %d/32", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN; 
             }
             // 密码最大64字节
             if(strcmp(char_name, "password") == 0 && data_len > MAX_PASSWORD_LEN) {
-                ESP_LOGE(TAG, "%s 密码长度过长: %d/64", GetTimeString().c_str(), data_len);
+                ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 密码长度过长: %d/64", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             }
             // ==== 新增数据校验结束 ====
 
             if (data_len > 256) {   // 原有长度检查
-                ESP_LOGE(TAG, "%s 数据长度超过最大限制: %d/256", GetTimeString().c_str(), data_len);
+                ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 数据长度超过最大限制: %d/256", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             }
 
             uint8_t* data = (uint8_t*)malloc(data_len + 1);
             if (!data) {
-                ESP_LOGE(TAG, "%s 内存分配失败，无法处理接收数据", GetTimeString().c_str());
+                ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 内存分配失败，无法处理接收数据", GetTimeString().c_str());
                 return BLE_ATT_ERR_INSUFFICIENT_RES;
             }
             
             rc = ble_hs_mbuf_to_flat(ctxt->om, data, data_len, NULL);
             if (rc != 0) {
-                ESP_LOGE(TAG, "%s 数据转换失败: %d", GetTimeString().c_str(), rc);
+                ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 数据转换失败: %d", GetTimeString().c_str(), rc);
                 free(data);
                 return BLE_ATT_ERR_UNLIKELY;
             }
             data[data_len] = '\0';
 
-            ESP_LOGI(TAG, "%s 接收到 %d 字节数据: %.*s (十六进制: %s)", 
+            ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据: %.*s (十六进制: %s)", 
                     GetTimeString().c_str(), data_len, data_len, data, bytes_to_hex(data, data_len));
 
             if (char_name) {
                 if (strcmp(char_name, "ssid") == 0) {
                     g_ble_config_instance->received_ssid_.assign((char*)data, data_len);
-                    ESP_LOGI(TAG, "%s 保存SSID: %s", GetTimeString().c_str(), g_ble_config_instance->received_ssid_.c_str());
+                    ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 保存SSID: %s", GetTimeString().c_str(), g_ble_config_instance->received_ssid_.c_str());
                 } else if (strcmp(char_name, "password") == 0) {
                     g_ble_config_instance->received_password_.assign((char*)data, data_len);
-                    ESP_LOGI(TAG, "%s 保存密码: %s", GetTimeString().c_str(), g_ble_config_instance->received_password_.c_str());
+                    ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 保存密码: %s", GetTimeString().c_str(), g_ble_config_instance->received_password_.c_str());
                 } else if (strcmp(char_name, "control") == 0 && 
                           data_len == 1 && data[0] == WIFI_CONTROL_CMD_CONNECT) {
-                    ESP_LOGI(TAG, "%s 收到连接WiFi命令", GetTimeString().c_str());
+                    ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 收到连接WiFi命令", GetTimeString().c_str());
                     if (!g_ble_config_instance->received_ssid_.empty() && 
                         !g_ble_config_instance->received_password_.empty()) {
-                        ESP_LOGI(TAG, "%s SSID和密码已接收，准备连接WiFi", GetTimeString().c_str());
+                        ESP_LOGI(TAG, "%s @gatt_svr_chr_access: SSID和密码已接收，准备连接WiFi", GetTimeString().c_str());
                         if (g_ble_config_instance->credentials_received_cb_) {
-                            ESP_LOGI(TAG, "%s 调用凭据接收回调", GetTimeString().c_str());
+                            ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 调用凭据接收回调", GetTimeString().c_str());
                             g_ble_config_instance->credentials_received_cb_(
                                 g_ble_config_instance->received_ssid_,
                                 g_ble_config_instance->received_password_);
                         }
                         if (g_ble_config_instance->connect_wifi_cb_) {
-                            ESP_LOGI(TAG, "%s 调用WiFi连接回调", GetTimeString().c_str());
+                            ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 调用WiFi连接回调", GetTimeString().c_str());
                             g_ble_config_instance->connect_wifi_cb_();
                         }
                     } else {
-                        ESP_LOGW(TAG, "%s 收到连接命令但SSID或密码为空", GetTimeString().c_str());
+                        ESP_LOGW(TAG, "%s @gatt_svr_chr_access: 收到连接命令但SSID或密码为空", GetTimeString().c_str());
                     }
                 }
             }
@@ -340,46 +340,46 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             break;
         }
         default:
-            ESP_LOGW(TAG, "%s 不支持的GATT操作: %d", GetTimeString().c_str(), ctxt->op);
+            ESP_LOGW(TAG, "%s @gatt_svr_chr_access: 不支持的GATT操作: %d", GetTimeString().c_str(), ctxt->op);
             return BLE_ATT_ERR_READ_NOT_PERMITTED;
     }
     return rc;
 }
 
 void BleConfig::gatt_svr_init(void) {
-    ESP_LOGI(TAG, "%s 初始化GATT服务器...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @gatt_svr_init: 初始化GATT服务器...", GetTimeString().c_str());
     int rc;
     
     // 配置GATT服务
     rc = ble_gatts_count_cfg(gatt_svr_svcs);
     if (rc != 0) {
-        ESP_LOGE(TAG, "%s GATT服务计数配置失败: %d", GetTimeString().c_str(), rc);
+        ESP_LOGE(TAG, "%s @gatt_svr_init: GATT服务计数配置失败: %d", GetTimeString().c_str(), rc);
         return; // 失败时直接返回，不使用assert
     }
     
     // 添加GATT服务
     rc = ble_gatts_add_svcs(gatt_svr_svcs);
     if (rc != 0) {
-        ESP_LOGE(TAG, "%s 添加GATT服务失败: %d", GetTimeString().c_str(), rc);
+        ESP_LOGE(TAG, "%s @gatt_svr_init: 添加GATT服务失败: %d", GetTimeString().c_str(), rc);
         return; // 失败时直接返回，不使用assert
     }
     
-    ESP_LOGI(TAG, "%s GATT服务器初始化成功", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @gatt_svr_init: GATT服务器初始化成功", GetTimeString().c_str());
 }
 
 void BleConfig::ble_advertise(void) {
-    ESP_LOGI(TAG, "%s 准备开始BLE广播...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @ble_advertise: 准备开始BLE广播...", GetTimeString().c_str());
     const int MAX_RETRY = 3;  // 最大重试次数
     int retry_count = 0;
     
     // 先检查是否已有广播在运行，如果有则先停止
     if (ble_gap_adv_active()) {
-        ESP_LOGI(TAG, "%s 检测到广播已在运行，先停止当前广播", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @ble_advertise: 检测到广播已在运行，先停止当前广播", GetTimeString().c_str());
         int rc = ble_gap_adv_stop();
         if (rc != 0) {
-            ESP_LOGW(TAG, "%s 停止当前广播失败: %d，继续尝试启动新广播", GetTimeString().c_str(), rc);
+            ESP_LOGW(TAG, "%s @ble_advertise: 停止当前广播失败: %d，继续尝试启动新广播", GetTimeString().c_str(), rc);
         } else {
-            ESP_LOGI(TAG, "%s 已停止当前广播，准备启动新广播", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @ble_advertise: 已停止当前广播，准备启动新广播", GetTimeString().c_str());
         }
         // 添加短暂延时，确保BLE栈有足够时间处理停止操作
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -400,11 +400,11 @@ void BleConfig::ble_advertise(void) {
         fields.name_len = strlen(dev_name);                                // 广播名称长度
         fields.name_is_complete = 1;                                       // 使用完整名称
 
-        ESP_LOGI(TAG, "%s 设置广播字段，设备名称: %s", GetTimeString().c_str(), dev_name);
+        ESP_LOGI(TAG, "%s @ble_advertise: 设置广播字段，设备名称: %s", GetTimeString().c_str(), dev_name);
 
         int rc = ble_gap_adv_set_fields(&fields);
         if (rc != 0) {
-            ESP_LOGE(TAG, "%s 设置广播字段失败: %d，重试次数: %d/%d", GetTimeString().c_str(), rc, retry_count + 1, MAX_RETRY);
+            ESP_LOGE(TAG, "%s @ble_advertise: 设置广播字段失败: %d，重试次数: %d/%d", GetTimeString().c_str(), rc, retry_count + 1, MAX_RETRY);
             retry_count++;
             vTaskDelay(pdMS_TO_TICKS(1000));  // 延迟1秒后重试
             continue;
@@ -417,22 +417,22 @@ void BleConfig::ble_advertise(void) {
         adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;               // 连接模式
         adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;               // 发现模式
 
-        ESP_LOGI(TAG, "%s 开始广播，间隔: %d-%d (单位: 0.625ms)", GetTimeString().c_str(), adv_params.itvl_min, adv_params.itvl_max);
+        ESP_LOGI(TAG, "%s @ble_advertise: 开始广播，间隔: %d-%d (单位: 0.625ms)", GetTimeString().c_str(), adv_params.itvl_min, adv_params.itvl_max);
 
         // 开始广播
         rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
                             &adv_params, ble_gap_event, NULL);
 
         if (rc == 0) {
-            ESP_LOGI(TAG, "%s BLE广播已成功启动", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @ble_advertise: BLE广播已成功启动", GetTimeString().c_str());
             return;  // 广播成功，退出函数
         } else if (rc == BLE_HS_EALREADY) {
             // 错误码2表示已经有广播在运行
-            ESP_LOGW(TAG, "%s 广播已在运行(BLE_HS_EALREADY)，尝试停止后重新启动", GetTimeString().c_str());
+            ESP_LOGW(TAG, "%s @ble_advertise: 广播已在运行(BLE_HS_EALREADY)，尝试停止后重新启动", GetTimeString().c_str());
             ble_gap_adv_stop();
             vTaskDelay(pdMS_TO_TICKS(200));  // 给BLE栈一些时间处理停止操作
         } else {
-            ESP_LOGE(TAG, "%s 启动BLE广播失败: %d，重试次数: %d/%d", GetTimeString().c_str(), rc, retry_count + 1, MAX_RETRY);
+            ESP_LOGE(TAG, "%s @ble_advertise: 启动BLE广播失败: %d，重试次数: %d/%d", GetTimeString().c_str(), rc, retry_count + 1, MAX_RETRY);
         }
         
         retry_count++;
@@ -440,24 +440,24 @@ void BleConfig::ble_advertise(void) {
         
     } while (retry_count < MAX_RETRY);
     
-    ESP_LOGE(TAG, "%s BLE广播启动失败，已达到最大重试次数", GetTimeString().c_str());
+    ESP_LOGE(TAG, "%s @ble_advertise: BLE广播启动失败，已达到最大重试次数", GetTimeString().c_str());
 }
 
 bool BleConfig::StartAdvertising() {
-    ESP_LOGI(TAG, "%s 尝试开始BLE广播...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @StartAdvertising: 尝试开始BLE广播...", GetTimeString().c_str());
     
     // 检查BLE主机是否已同步
     if (ble_hs_synced()) {
-        ESP_LOGI(TAG, "%s BLE主机已同步，准备开始广播", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @StartAdvertising: BLE主机已同步，准备开始广播", GetTimeString().c_str());
         
         // 检查是否已有广播在运行
         if (ble_gap_adv_active()) {
-            ESP_LOGI(TAG, "%s 检测到广播已在运行，先停止当前广播", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @StartAdvertising: 检测到广播已在运行，先停止当前广播", GetTimeString().c_str());
             int rc = ble_gap_adv_stop();
             if (rc != 0) {
-                ESP_LOGW(TAG, "%s 停止当前广播失败: %d，但仍将尝试启动新广播", GetTimeString().c_str(), rc);
+                ESP_LOGW(TAG, "%s @StartAdvertising: 停止当前广播失败: %d，但仍将尝试启动新广播", GetTimeString().c_str(), rc);
             } else {
-                ESP_LOGI(TAG, "%s 已停止当前广播", GetTimeString().c_str());
+                ESP_LOGI(TAG, "%s @StartAdvertising: 已停止当前广播", GetTimeString().c_str());
             }
             // 添加短暂延时，确保BLE栈有足够时间处理停止操作
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -467,54 +467,54 @@ bool BleConfig::StartAdvertising() {
         ble_advertise();
         return true; // 广播启动成功
     } else {
-        ESP_LOGW(TAG, "%s BLE主机尚未同步，将在同步后自动开始广播", GetTimeString().c_str());
+        ESP_LOGW(TAG, "%s @StartAdvertising: BLE主机尚未同步，将在同步后自动开始广播", GetTimeString().c_str());
         return false; // 当前无法启动广播，需等待同步
     }
 }
 
 void BleConfig::StopAdvertising() {
-    ESP_LOGI(TAG, "%s 尝试停止BLE广播...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @StopAdvertising: 尝试停止BLE广播...", GetTimeString().c_str());
     if (ble_gap_adv_active()) {
         int rc = ble_gap_adv_stop();
         if (rc == 0) {
-            ESP_LOGI(TAG, "%s BLE广播已成功停止", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @StopAdvertising: BLE广播已成功停止", GetTimeString().c_str());
         } else {
-            ESP_LOGE(TAG, "%s 停止BLE广播失败: %d", GetTimeString().c_str(), rc);
+            ESP_LOGE(TAG, "%s @StopAdvertising: 停止BLE广播失败: %d", GetTimeString().c_str(), rc);
         }
     } else {
-        ESP_LOGI(TAG, "%s BLE广播已经处于停止状态", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @StopAdvertising: BLE广播已经处于停止状态", GetTimeString().c_str());
     }
 }
 
 void BleConfig::ble_on_sync(void) {
-    ESP_LOGI(TAG, "%s BLE主机同步完成，准备开始广播", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @ble_on_sync: BLE主机同步完成，准备开始广播", GetTimeString().c_str());
 
     // 获取设备地址
     uint8_t addr_val[6] = {0};
     int rc = ble_hs_id_copy_addr(BLE_ADDR_PUBLIC, addr_val, NULL);
     if (rc == 0) {
-        ESP_LOGI(TAG, "%s 设备MAC地址: %02x:%02x:%02x:%02x:%02x:%02x",
+        ESP_LOGI(TAG, "%s @ble_on_sync: 设备MAC地址: %02x:%02x:%02x:%02x:%02x:%02x",
                  GetTimeString().c_str(), addr_val[5], addr_val[4], addr_val[3], addr_val[2], addr_val[1], addr_val[0]);
     } else {
-        ESP_LOGE(TAG, "%s 获取设备地址失败: %d", GetTimeString().c_str(), rc);
+        ESP_LOGE(TAG, "%s @ble_on_sync: 获取设备地址失败: %d", GetTimeString().c_str(), rc);
     }
 
     // 开始广播
     if (g_ble_config_instance) {
-        ESP_LOGI(TAG, "%s BLE实例已初始化，开始广播", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @ble_on_sync: BLE实例已初始化，开始广播", GetTimeString().c_str());
         g_ble_config_instance->ble_advertise();
     } else {
-        ESP_LOGE(TAG, "%s BLE实例未初始化，无法开始广播", GetTimeString().c_str());
+        ESP_LOGE(TAG, "%s @ble_on_sync: BLE实例未初始化，无法开始广播", GetTimeString().c_str());
     }
 }
 
 void BleConfig::ble_on_reset(int reason) {
-    ESP_LOGE(TAG, "%s BLE主机重置，原因: %d", GetTimeString().c_str(), reason);
+    ESP_LOGE(TAG, "%s @ble_on_reset: BLE主机重置，原因: %d", GetTimeString().c_str(), reason);
 }
 
 // BLE主机任务，负责管理BLE主机的生命周期，包括初始化、同步、广播等
 void BleConfig::ble_host_task(void *param) {
-    ESP_LOGI(TAG, "%s @ble_host_task：BLE主机任务已启动", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务已启动", GetTimeString().c_str());
 
     // 1. 初始化阶段
     ble_host_task_handle = xTaskGetCurrentTaskHandle(); // 保存任务句柄，用于后续操作，如停止广播
@@ -525,7 +525,7 @@ void BleConfig::ble_host_task(void *param) {
     while (ble_host_task_running) {
         // 检查是否收到停止信号
         if (ble_host_task_state == BLE_TASK_STOPPING) {
-            ESP_LOGI(TAG, "%s @ble_host_task：收到任务停止信号，准备退出...", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @ble_host_task: 收到任务停止信号，准备退出...", GetTimeString().c_str());
             break;
         }
         
@@ -536,7 +536,7 @@ void BleConfig::ble_host_task(void *param) {
             // 从事件队列中获取事件并处理
             struct ble_npl_event *ev = ble_npl_eventq_get(eventq, pdMS_TO_TICKS(100));
             if (ev) {
-                ESP_LOGD(TAG, "%s @ble_host_task：处理事件", GetTimeString().c_str());
+                ESP_LOGD(TAG, "%s @ble_host_task: 处理事件", GetTimeString().c_str());
                 ble_npl_event_run(ev);  // 处理事件，如更新连接状态等
                 // 事件处理完成后释放内存
                 ble_npl_eventq_remove(eventq, ev);
@@ -548,7 +548,7 @@ void BleConfig::ble_host_task(void *param) {
     }
 
     // 3. 清理阶段
-    ESP_LOGI(TAG, "%s @ble_host_task：开始执行BLE任务清理工作", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @ble_host_task: 开始执行BLE任务清理工作", GetTimeString().c_str());
 
     // 停止广播, 确保广播已停止
     if (ble_gap_adv_active()) { // 检查是否有广播在运行
@@ -560,31 +560,31 @@ void BleConfig::ble_host_task(void *param) {
     
     // 更新最终状态
     ble_host_task_state = BLE_TASK_STOPPED;
-    ESP_LOGI(TAG, "%s @ble_host_task：BLE主机任务已完全退出", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务已完全退出", GetTimeString().c_str());
     
     // 任务结束，删除任务，释放内存，并返回
     vTaskDelete(NULL);
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
-    ESP_LOGI(TAG, "%s 尝试发送WiFi状态: %d", GetTimeString().c_str(), status);
+    ESP_LOGI(TAG, "%s @SendWifiStatus: 尝试发送WiFi状态: %d", GetTimeString().c_str(), status);
     
     // 喂任务看门狗，防止长时间操作导致看门狗超时
     esp_task_wdt_reset();
     
     if (conn_handle_ == BLE_HS_CONN_HANDLE_NONE || status_val_handle_ == 0) {
-        ESP_LOGW(TAG, "%s 无法发送状态，没有连接或句柄无效 (conn_handle=%d, status_val_handle=%d)", 
+        ESP_LOGW(TAG, "%s @SendWifiStatus: 无法发送状态，没有连接或句柄无效 (conn_handle=%d, status_val_handle=%d)", 
                 GetTimeString().c_str(), conn_handle_, status_val_handle_);
         return;
     }
 
     // 分配内存前先检查可用堆内存
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    ESP_LOGI(TAG, "%s 当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    ESP_LOGI(TAG, "%s @SendWifiStatus: 当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
     
     struct os_mbuf *om = ble_hs_mbuf_from_flat(&status, sizeof(status));
     if (!om) {
-        ESP_LOGE(TAG, "%s 为通知分配内存失败", GetTimeString().c_str());
+        ESP_LOGE(TAG, "%s @SendWifiStatus: 为通知分配内存失败", GetTimeString().c_str());
         return;
     }
 
@@ -597,10 +597,10 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
         
         rc = ble_gatts_notify_custom(conn_handle_, status_val_handle_, om);
         if(rc == 0) {
-            ESP_LOGI(TAG, "%s WiFi状态通知发送成功: %d", GetTimeString().c_str(), status);
+            ESP_LOGI(TAG, "%s @SendWifiStatus: WiFi状态通知发送成功: %d", GetTimeString().c_str(), status);
             break;
         }
-        ESP_LOGW(TAG, "%s 通知发送失败 (尝试 %d/%d)，错误码: %d，稍后重试...", 
+        ESP_LOGW(TAG, "%s @SendWifiStatus: 通知发送失败 (尝试 %d/%d)，错误码: %d，稍后重试...", 
                 GetTimeString().c_str(), retry+1, NOTIFY_RETRY_COUNT, rc);
         
         // 延时前再次喂狗
@@ -608,7 +608,7 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_RETRY_DELAY_MS));
     }
     if (rc != 0) {
-        ESP_LOGE(TAG, "%s 发送通知失败，所有重试均失败; rc=%d", GetTimeString().c_str(), rc);
+        ESP_LOGE(TAG, "%s @SendWifiStatus: 发送通知失败，所有重试均失败; rc=%d", GetTimeString().c_str(), rc);
     }
 
     os_mbuf_free_chain(om);  // 确保释放mbuf
@@ -618,12 +618,12 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
 }
 
 void BleConfig::SetCredentialsReceivedCallback(std::function<void(const std::string&, const std::string&)> cb) {
-    ESP_LOGI(TAG, "设置凭据接收回调");
+    ESP_LOGI(TAG, "%s @SetCredentialsReceivedCallback: 设置凭据接收回调", GetTimeString().c_str());
     credentials_received_cb_ = cb;
 }
 
 void BleConfig::SetConnectWifiCallback(std::function<void()> cb) {
-    ESP_LOGI(TAG, "设置WiFi连接回调");
+    ESP_LOGI(TAG, "%s @SetConnectWifiCallback: 设置WiFi连接回调", GetTimeString().c_str());
     connect_wifi_cb_ = cb;
 }
 
@@ -633,77 +633,77 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
     struct ble_gap_conn_desc desc;
     int rc;
     if (!g_ble_config_instance) {
-        ESP_LOGE(TAG, "%s BLE事件处理失败：全局实例不存在", GetTimeString().c_str());
+        ESP_LOGE(TAG, "%s @ble_gap_event: BLE事件处理失败：全局实例不存在", GetTimeString().c_str());
         return 0;
     }
 
-    ESP_LOGD(TAG, "%s 收到BLE事件: %d", GetTimeString().c_str(), event->type);
+    ESP_LOGD(TAG, "%s @ble_gap_event: 收到BLE事件: %d", GetTimeString().c_str(), event->type);
     
     switch (event->type) {
 
     // === 新增加密状态处理 === 
     case BLE_GAP_EVENT_ENC_CHANGE:
         if(event->enc_change.status == 0) {
-            ESP_LOGI(TAG, "%s 加密状态变更: %s", 
+            ESP_LOGI(TAG, "%s @ble_gap_event: 加密状态变更: %s", 
                     GetTimeString().c_str(), event->enc_change.status == 0 ? "已加密" : "未加密");
         } else {
-            ESP_LOGE(TAG, "%s 加密失败, 状态码: %d", GetTimeString().c_str(), event->enc_change.status);
+            ESP_LOGE(TAG, "%s @ble_gap_event: 加密失败, 状态码: %d", GetTimeString().c_str(), event->enc_change.status);
         }
         return 0;
 
     case BLE_GAP_EVENT_CONNECT:
-        ESP_LOGI(TAG, "%s BLE连接事件 - 状态: %d", GetTimeString().c_str(), event->connect.status);
+        ESP_LOGI(TAG, "%s @ble_gap_event: BLE连接事件 - 状态: %d", GetTimeString().c_str(), event->connect.status);
         if (event->connect.status == 0) {
-            ESP_LOGI(TAG, "%s BLE设备已连接，连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
+            ESP_LOGI(TAG, "%s @ble_gap_event: BLE设备已连接，连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
             rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
             if (rc == 0) {
-                ESP_LOGI(TAG, "%s 连接设备地址: %02x:%02x:%02x:%02x:%02x:%02x",
+                ESP_LOGI(TAG, "%s @ble_gap_event: 连接设备地址: %02x:%02x:%02x:%02x:%02x:%02x",
                         GetTimeString().c_str(), desc.peer_id_addr.val[5], desc.peer_id_addr.val[4], 
                         desc.peer_id_addr.val[3], desc.peer_id_addr.val[2], 
                         desc.peer_id_addr.val[1], desc.peer_id_addr.val[0]);
             } else {
-                ESP_LOGW(TAG, "%s 无法获取连接设备信息: %d", GetTimeString().c_str(), rc);
+                ESP_LOGW(TAG, "%s @ble_gap_event: 无法获取连接设备信息: %d", GetTimeString().c_str(), rc);
             }
             g_ble_config_instance->conn_handle_ = event->connect.conn_handle;
-            ESP_LOGI(TAG, "%s 保存连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
+            ESP_LOGI(TAG, "%s @ble_gap_event: 保存连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
             g_ble_config_instance->StopAdvertising();
         } else {
-            ESP_LOGW(TAG, "%s 连接失败，重新开始广播", GetTimeString().c_str());
+            ESP_LOGW(TAG, "%s @ble_gap_event: 连接失败，重新开始广播", GetTimeString().c_str());
             g_ble_config_instance->StartAdvertising();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "%s BLE断开连接 - 原因: %d", GetTimeString().c_str(), event->disconnect.reason);
+        ESP_LOGI(TAG, "%s @ble_gap_event: BLE断开连接 - 原因: %d", GetTimeString().c_str(), event->disconnect.reason);
         g_ble_config_instance->conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
-        ESP_LOGI(TAG, "%s 连接已断开，重新开始广播", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @ble_gap_event: 连接已断开，重新开始广播", GetTimeString().c_str());
         g_ble_config_instance->StartAdvertising();
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        ESP_LOGI(TAG, "%s BLE广播完成事件 - 状态: %d", GetTimeString().c_str(), event->adv_complete.reason);
-        // ESP_LOGI(TAG, "%s BLE广播完成事件 - 实例: %d, 状态: %d", GetTimeString().c_str(), event->adv_complete.instance, event->adv_complete.reason);
+        ESP_LOGI(TAG, "%s @ble_gap_event: BLE广播完成事件 - 状态: %d", GetTimeString().c_str(), event->adv_complete.reason);
+        // ESP_LOGI(TAG, "%s @ble_gap_event: BLE广播完成事件 - 实例: %d, 状态: %d", GetTimeString().c_str(), event->adv_complete.instance, event->adv_complete.reason);
         return 0;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
-        ESP_LOGI(TAG, "%s BLE订阅事件 - 连接句柄: %d, 属性句柄: %d, 订阅状态: %d", 
+        ESP_LOGI(TAG, "%s @ble_gap_event: BLE订阅事件 - 连接句柄: %d, 属性句柄: %d, 订阅状态: %d", 
                 GetTimeString().c_str(), event->subscribe.conn_handle, event->subscribe.attr_handle, 
                 event->subscribe.cur_notify);
         if (event->subscribe.attr_handle == g_ble_config_instance->status_val_handle_ &&
             event->subscribe.cur_notify) {
-            ESP_LOGI(TAG, "%s 客户端已订阅状态通知，发送初始状态", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @ble_gap_event: 客户端已订阅状态通知，发送初始状态", GetTimeString().c_str());
             g_ble_config_instance->SendWifiStatus(WIFI_STATUS_IDLE);
         }
         return 0;
 
     default:
-        ESP_LOGD(TAG, "%s 未处理的BLE事件: %d", GetTimeString().c_str(), event->type);
+        ESP_LOGD(TAG, "%s @ble_gap_event: 未处理的BLE事件: %d", GetTimeString().c_str(), event->type);
         return 0;
     }
 }
 
 void BleConfig::Deinitialize() {
-    ESP_LOGI(TAG, "%s @Deinitialize：开始完整去初始化BLE模块...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Deinitialize: 开始完整去初始化BLE模块...", GetTimeString().c_str());
 
     // 1. 先停止所有BLE活动
     StopAdvertising();                  // 停止广播
@@ -711,35 +711,35 @@ void BleConfig::Deinitialize() {
 
     // 2. 设置任务状态为停止中
     ble_host_task_state = BLE_TASK_STOPPING;
-    ESP_LOGI(TAG, "%s @Deinitialize：设置任务状态为停止中", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Deinitialize: 设置任务状态为停止中", GetTimeString().c_str());
     
     // 3. 从看门狗中移除任务，标记任务需要退出
     if (ble_host_task_handle != NULL) {
         esp_task_wdt_delete(ble_host_task_handle);
-        ESP_LOGI(TAG, "%s @Deinitialize：从看门狗中移除BLE任务完成...", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @Deinitialize: 从看门狗中移除BLE任务完成...", GetTimeString().c_str());
     }
     ble_host_task_running = false;
-    ESP_LOGI(TAG, "%s @Deinitialize：标记BLE任务需要退出...", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Deinitialize: 标记BLE任务需要退出...", GetTimeString().c_str());
 
     // 4. 等待任务退出，带超时机制
     const TickType_t xMaxWaitTicks = pdMS_TO_TICKS(3000);   // 3秒, 等待任务退出的最长时间
     TickType_t xStartTicks = xTaskGetTickCount();           // 记录任务开始的时间
-    ESP_LOGI(TAG, "%s @Deinitialize：开始等待任务退出", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Deinitialize: 开始等待任务退出", GetTimeString().c_str());
     while (ble_host_task_state != BLE_TASK_STOPPED) {
         vTaskDelay(pdMS_TO_TICKS(10));  // 等待一段时间, 避免长时间占用CPU
         
         // 检查是否超时
         if ((xTaskGetTickCount() - xStartTicks) > xMaxWaitTicks) {  // 如果超过最大等待时间
-            ESP_LOGW(TAG, "%s @Deinitialize：等待任务退出超时，尝试强制结束...", GetTimeString().c_str());
+            ESP_LOGW(TAG, "%s @Deinitialize: 等待任务退出超时，尝试强制结束...", GetTimeString().c_str());
             
             if (ble_host_task_handle != NULL) {
                 // 获取任务状态, 以确保任务已被删除
                 eTaskState task_state = eTaskGetState(ble_host_task_handle);
-                ESP_LOGI(TAG, "%s @Deinitialize：任务当前状态: %d", GetTimeString().c_str(), task_state);
+                ESP_LOGI(TAG, "%s @Deinitialize: 任务当前状态: %d", GetTimeString().c_str(), task_state);
                 
                 // 强制删除任务
                 vTaskDelete(ble_host_task_handle);  // 强制删除任务
-                ESP_LOGI(TAG, "%s @Deinitialize：已强制删除任务", GetTimeString().c_str());
+                ESP_LOGI(TAG, "%s @Deinitialize: 已强制删除任务", GetTimeString().c_str());
                 
                 ble_host_task_handle = NULL;                // 重置任务句柄
                 ble_host_task_state = BLE_TASK_STOPPED;     // 设置任务状态为已停止
@@ -747,7 +747,7 @@ void BleConfig::Deinitialize() {
             break;
         }
         
-        ESP_LOGI(TAG, "%s @Deinitialize：等待BLE任务退出... (已等待 %d ms)", 
+        ESP_LOGI(TAG, "%s @Deinitialize: 等待BLE任务退出... (已等待 %d ms)", 
                  GetTimeString().c_str(), 
                  (int)((xTaskGetTickCount() - xStartTicks) * portTICK_PERIOD_MS));
     }
@@ -761,11 +761,11 @@ void BleConfig::Deinitialize() {
     do {
         rc = nimble_port_deinit();  // 去初始化NimBLE
         if (rc == 0) {
-            ESP_LOGI(TAG, "%s @Deinitialize：NimBLE模块去初始化成功", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @Deinitialize: NimBLE模块去初始化成功", GetTimeString().c_str());
             break;
         }
         
-        ESP_LOGW(TAG, "%s @Deinitialize：NimBLE模块去初始化失败: %d，重试次数: %d/%d", 
+        ESP_LOGW(TAG, "%s @Deinitialize: NimBLE模块去初始化失败: %d，重试次数: %d/%d", 
                  GetTimeString().c_str(), rc, deinit_retry_count + 1, MAX_DEINIT_RETRIES);
         
         // 短暂延时后重试
@@ -776,19 +776,19 @@ void BleConfig::Deinitialize() {
 
     // 6. 如果去初始化失败，记录错误并尝试强制清理
     if (rc != 0) {
-        ESP_LOGE(TAG, "%s @Deinitialize：NimBLE模块去初始化最终失败，将尝试强制清理资源", GetTimeString().c_str());
+        ESP_LOGE(TAG, "%s @Deinitialize: NimBLE模块去初始化最终失败，将尝试强制清理资源", GetTimeString().c_str());
         
         // 强制停止广播
         if (ble_gap_adv_active()) {
             ble_gap_adv_stop();
-            ESP_LOGI(TAG, "%s @Deinitialize：强制停止广播", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @Deinitialize: 强制停止广播", GetTimeString().c_str());
         }
 
         // 强制断开所有连接
         for (int i = 0; i < CONFIG_BT_NIMBLE_MAX_CONNECTIONS; i++) {    // 遍历所有连接，i为连接句柄
             ble_gap_terminate(i, BLE_ERR_REM_USER_CONN_TERM);           // 强制断开连接，错误码为用户终止
         }
-        ESP_LOGI(TAG, "%s @Deinitialize：强制断开所有连接", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @Deinitialize: 强制断开所有连接", GetTimeString().c_str());
 
         // 重置关键状态变量
         ble_host_task_running = false;
@@ -798,24 +798,24 @@ void BleConfig::Deinitialize() {
         if (ble_host_task_handle != nullptr) {
             vTaskDelete(ble_host_task_handle);
             ble_host_task_handle = nullptr;
-            ESP_LOGI(TAG, "%s @Deinitialize：强制删除BLE主机任务", GetTimeString().c_str());
+            ESP_LOGI(TAG, "%s @Deinitialize: 强制删除BLE主机任务", GetTimeString().c_str());
         }
 
         // 清空接收的WiFi凭据
         received_ssid_.clear();
         received_password_.clear();
         
-        ESP_LOGI(TAG, "%s @Deinitialize：紧急资源清理完成", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @Deinitialize: 紧急资源清理完成", GetTimeString().c_str());
     }
 
     // 7. 释放资源（即使去初始化失败也需要执行）
     if (ble_host_task_handle != NULL) {
         vTaskDelete(ble_host_task_handle);
         ble_host_task_handle = NULL;
-        ESP_LOGI(TAG, "%s @Deinitialize：释放BLE任务资源完成", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @Deinitialize: 释放BLE任务资源完成", GetTimeString().c_str());
     }
 
     // 清空全局实例指针，防止野指针
     g_ble_config_instance = nullptr; // <<< 置空，避免在 BLE 已经释放后，静态回调函数（如果被意外调用）使用无效的指针。
-    ESP_LOGI(TAG, "%s @Deinitialize：BLE模块去初始化完成", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @Deinitialize: BLE模块去初始化完成", GetTimeString().c_str());
 }
