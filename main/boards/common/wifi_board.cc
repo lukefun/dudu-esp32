@@ -1,40 +1,36 @@
 #include "wifi_board.h"
 
-#include "display.h"
-#include "application.h"    // <--- 包含 Application 头文件
-#include "system_info.h"
-#include "font_awesome_symbols.h"
-#include "settings.h"
-#include "assets/lang_config.h" // <--- 包含语言配置头文件
-#include "board.h"              // <--- 包含 Board 头文件
-// 添加 BLE 配网头文件
-#include "ble_config/ble_config.h"
-
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_http.h>
+#include <esp_log.h>
 #include <esp_mqtt.h>
+#include <esp_task_wdt.h>
 #include <esp_udp.h>
+#include <sys/time.h>
 #include <tcp_transport.h>
 #include <tls_transport.h>
 #include <web_socket.h>
-#include <esp_log.h>
-#include "esp_task_wdt.h"
-
-#include <wifi_station.h>
-#include <wifi_configuration_ap.h>
-#include <ssid_manager.h>
-#include <sys/time.h>
-
-#include <iostream>
-#include <string>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
+#include <string>
+
+#include "application.h"    // <--- 包含 Application 头文件
+#include "assets/lang_config.h" // <--- 包含语言配置头文件
+#include "ble_config/ble_config.h"
+#include "board.h"              // <--- 包含 Board 头文件
+#include "display.h"
+#include "font_awesome_symbols.h"
+#include "settings.h"
+#include "ssid_manager.h"
+#include "system_info.h"
+#include "wifi_configuration_ap.h"
+#include "wifi_station.h"
 
 static const char *TAG = "WifiBoard";    // <--- 确保 TAG 已定义
-
 
 static std::string GetTimeString() {
     // 获取当前时间点
