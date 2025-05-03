@@ -23,6 +23,12 @@ protected:
 
     // 新增：BLE配网流程中的WiFi连接
     void ConnectWifiByBle(const std::string& ssid, const std::string& password);
+    
+    // 新增：尝试连接已保存的WiFi网络
+    bool TryConnectSavedWifi();
+    
+    // 新增：启动配网模式
+    void StartConfigMode();
 
     // 新增：保存BLE配网过程中收到的SSID/密码
     std::string ble_ssid_;

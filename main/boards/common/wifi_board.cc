@@ -475,91 +475,114 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     }
 }
 
-void WifiBoard::StartNetwork() {
-    ESP_LOGI(TAG, "%s @StartNetwork：开始启动网络", GetTimeString().c_str()); // 添加日志
-
-    // 检查 NVS 中是否有 WiFi 配置
-    ESP_LOGI(TAG, "%s @StartNetwork：检查 NVS 中的 WiFi 凭据...", GetTimeString().c_str());
-    auto& ssid_manager = SsidManager::GetInstance();    // 获取 SSID 管理器实例
-    auto ssid_list = ssid_manager.GetSsidList();        // 获取 SSID 列表
-    bool nvs_is_empty = ssid_list.empty();              // 检查 NVS 是否为空
-
-    ESP_LOGI(TAG, "%s @StartNetwork：NVS 中 SSID 数量: %d", GetTimeString().c_str(), ssid_list.size()); // 添加日志，显示 SSID 数量
-
-    // 检查是否强制进入配网模式 (例如长按按钮触发)
-    if (wifi_config_mode_) {
-        ESP_LOGI(TAG, "%s @StartNetwork：检测到强制配网标志，直接进入配网模式", GetTimeString().c_str());
-        EnterWifiConfigMode(); // 进入 BLE 配网模式
-        return; // 不再继续尝试连接
-    }
-
-    // 如果 NVS 为空，进入 BLE 配网模式
-    bool connected = false;
-    // 如果 NVS 非空，尝试连接已保存的 WiFi
-    if (!nvs_is_empty) {
-        ESP_LOGI(TAG, "%s @StartNetwork：NVS 非空，尝试连接已保存的 WiFi...", GetTimeString().c_str());
-        auto& wifi_station = WifiStation::GetInstance();
+// 尝试连接已保存的 WiFi 网络
+bool WifiBoard::TryConnectSavedWifi() {
+    ESP_LOGI(TAG, "%s @TryConnectSavedWifi：尝试连接已保存的 WiFi 网络", GetTimeString().c_str());
+    
+    auto& wifi_station = WifiStation::GetInstance();    // 获取 WiFi 实例
  
-        // 设置 WiFi 扫描开始回调
-        wifi_station.OnScanBegin([this]() {
-            ESP_LOGI(TAG, "%s @StartNetwork.OnScanBegin：WiFi 扫描开始", GetTimeString().c_str());
-            auto display = Board::GetInstance().GetDisplay();   // 获取显示实例
-            if (display) display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000); // 显示扫描提示，持续 30 秒
-        });
+    // 设置 WiFi 扫描开始（回调函数）
+    wifi_station.OnScanBegin([this]() { // 使用 lambda 表达式捕获 this 指针，以访问成员变量
+        ESP_LOGI(TAG, "%s @TryConnectSavedWifi.OnScanBegin：WiFi 扫描开始", GetTimeString().c_str());
 
-        // 设置 WiFi 连接开始回调
-        wifi_station.OnConnect([this](const std::string& ssid) {
-            ESP_LOGI(TAG, "%s @StartNetwork.OnConnect：开始连接 WiFi: %s", GetTimeString().c_str(), ssid.c_str());
-            auto display = Board::GetInstance().GetDisplay();   // 获取显示实例
-            if (display) {
-                std::string notification = Lang::Strings::CONNECT_TO;    // 连接提示
-                notification += ssid;    // 添加 SSID
-                notification += "...";   // 添加连接中
-                display->ShowNotification(notification.c_str(), 30000); // 显示连接提示，持续 30 秒
-            }
-        });
+        auto display = Board::GetInstance().GetDisplay();   // 获取显示实例
+        if (display) display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000); // 显示扫描提示，持续 30 秒
+    });
 
-        // 设置 WiFi 连接成功回调
-        wifi_station.OnConnected([this](const std::string& ssid) {
-            ESP_LOGI(TAG, "%s @StartNetwork.OnConnected：WiFi 连接成功: %s", GetTimeString().c_str(), ssid.c_str());
-            auto display = Board::GetInstance().GetDisplay();
-            if (display) { // 添加判空
-                std::string notification = Lang::Strings::CONNECTED_TO;
-                notification += ssid;
-                display->ShowNotification(notification.c_str(), 30000);
-            }
-        });
+    // 设置 WiFi 连接开始（回调函数）
+    wifi_station.OnConnect([this](const std::string& ssid) {    // 使用 lambda 表达式捕获 this 指针，以访问成员变量
+        ESP_LOGI(TAG, "%s @TryConnectSavedWifi.OnConnect：开始连接 WiFi: %s", GetTimeString().c_str(), ssid.c_str());
 
-        wifi_station.Start();   /// <--- 启动 WiFi 连接
-        // 等待连接结果
-        ESP_LOGI(TAG, "%s @StartNetwork：等待 WiFi 连接，超时时间: 60 秒", GetTimeString().c_str());
-        connected = wifi_station.WaitForConnected(60 * 1000);
-        // 检查连接结果
-        if (connected) {
-            ESP_LOGI(TAG, "%s @StartNetwork：WiFi 连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
-            // --- 连接成功，正常启动 ---
-            return; // 正常启动，不进入配网
-        } else {
-            ESP_LOGW(TAG, "%s @StartNetwork：尝试连接已保存的 WiFi 失败。", GetTimeString().c_str());
-            wifi_station.Stop(); // 停止尝试连接
-
-            // >>>>> 修改点: 如果尝试连接已保存的 Wi-Fi 失败，显式进入配网模式 <<<<<
-            wifi_config_mode_ = true; // 标记进入配网模式，以便 EnterWifiConfigMode 执行
+        auto display = Board::GetInstance().GetDisplay();   // 获取显示实例
+        if (display) {
+            std::string notification = Lang::Strings::CONNECT_TO;    // 连接提示
+            notification += ssid;    // 添加 SSID
+            notification += "...";   // 添加连接中
+            display->ShowNotification(notification.c_str(), 30000); // 显示连接提示，持续 30 秒
         }
+    });
+
+    // 设置 WiFi 连接成功（回调函数）
+    wifi_station.OnConnected([this](const std::string& ssid) {   // 使用 lambda 表达式捕获 this 指针，以访问成员变量
+        ESP_LOGI(TAG, "%s @TryConnectSavedWifi.OnConnected：WiFi 连接成功: %s", GetTimeString().c_str(), ssid.c_str());
+
+        auto display = Board::GetInstance().GetDisplay();   // 获取显示实例
+        if (display) { // 添加判空
+            std::string notification = Lang::Strings::CONNECTED_TO;
+            notification += ssid;
+            display->ShowNotification(notification.c_str(), 30000);
+        }
+    });
+
+    wifi_station.Start();   // 用 NVS 保存的配置信息，启动尝试连接 WiFi
+    ESP_LOGI(TAG, "%s @TryConnectSavedWifi：[启动连接WiFi]用 NVS 保存的配置信息，启动尝试连接 WiFi", GetTimeString().c_str());
+
+    // 等待连接结果
+    ESP_LOGI(TAG, "%s @TryConnectSavedWifi：[等待 WiFi 连接]等待时间: 6 秒", GetTimeString().c_str());
+    bool connected = wifi_station.WaitForConnected(6 * 1000);
+
+    // 检查连接结果
+    if (connected) {
+        ESP_LOGI(TAG, "%s @TryConnectSavedWifi：[WiFi 连接成功]用保存在 NVS 的配置，连接 WiFi 成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
+        return true; // 连接成功
+    } else {
+        ESP_LOGW(TAG, "%s @TryConnectSavedWifi：[WiFi 连接失败] 用保存在 NVS 的配置，连接 WiFi 失败", GetTimeString().c_str());
+        wifi_station.Stop(); // 停止尝试连接
+        return false; // 连接失败
     }
+}
 
-    // --- 执行到这里，说明：NVS 为空 或 NVS 非空但连接失败 ---
-    ESP_LOGI(TAG, "%s @StartNetwork：需要进入配网模式 (NVS 是否为空: %s, 连接是否成功: %s)", GetTimeString().c_str(), nvs_is_empty ? "是" : "否", connected ? "是" : "否");
-
-    // 播放配网提示音：
+// 启动配网模式
+void WifiBoard::StartConfigMode() {
+    ESP_LOGI(TAG, "%s @StartConfigMode：启动配网模式", GetTimeString().c_str());
+    
+    // 播放BLE配网提示音
     auto& application = Application::GetInstance();
-    ESP_LOGI(TAG, "%s @StartNetwork：播放配网提示音", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @StartConfigMode：播放BLE配网提示音", GetTimeString().c_str());
     application.PlaySound(Lang::Sounds::P3_WIFI_CONFIG_REQUIRED);
     vTaskDelay(pdMS_TO_TICKS(500)); // 稍作延时
 
     // 进入 BLE 配网模式
     wifi_config_mode_ = true;   // 标记进入配网模式
     EnterWifiConfigMode();      // 进入 BLE 配网模式
+}
+
+// 主网络启动方法
+void WifiBoard::StartNetwork() {
+    ESP_LOGI(TAG, "%s @StartNetwork：开始启动网络", GetTimeString().c_str());
+
+    // 检查 NVS 中是否有 WiFi 配置
+    ESP_LOGI(TAG, "%s @StartNetwork：检查 NVS 中的 WiFi 凭据（SSID 列表）...", GetTimeString().c_str());
+    auto& ssid_manager = SsidManager::GetInstance();    // 获取 SSID 管理器实例
+    auto ssid_list = ssid_manager.GetSsidList();        // 获取 SSID 列表
+    bool nvs_is_empty = ssid_list.empty();              // 检查 NVS 是否为空
+
+    ESP_LOGI(TAG, "%s @StartNetwork：NVS 中 SSID 数量: %d", GetTimeString().c_str(), ssid_list.size());
+
+    // 检查是否强制进入配网模式 (例如长按按钮触发)
+    if (wifi_config_mode_) {
+        ESP_LOGI(TAG, "%s @StartNetwork：检测到强制配网标志，直接进入配网模式", GetTimeString().c_str());
+        StartConfigMode();
+        return;
+    }
+
+    // 如果 NVS 为空，直接进入配网模式
+    if (nvs_is_empty) {
+        ESP_LOGI(TAG, "%s @StartNetwork：NVS 为空，进入配网模式", GetTimeString().c_str());
+        StartConfigMode();
+        return;
+    }
+
+    // 如果 NVS 非空，尝试连接 WiFi
+    ESP_LOGI(TAG, "%s @StartNetwork：NVS 非空，尝试连接已保存的 WiFi", GetTimeString().c_str());
+    bool connected = TryConnectSavedWifi();
+    
+    // 如果连接失败，进入配网模式
+    if (!connected) {
+        ESP_LOGI(TAG, "%s @StartNetwork：连接已保存的 WiFi 失败，进入配网模式", GetTimeString().c_str());
+        StartConfigMode();
+    }
+    // 连接成功则直接返回，继续正常启动流程
 }
 
 Http* WifiBoard::CreateHttp() {
