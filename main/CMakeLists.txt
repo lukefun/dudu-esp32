@@ -239,6 +239,7 @@ idf_component_register(SRCS ${SOURCES}
                         nvs_flash   # 实际用到
                         log         # 实际用到
                         efuse       # 实际用到
+                        esp_wifi    # 添加WiFi支持
                     WHOLE_ARCHIVE
                     )
 
