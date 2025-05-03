@@ -51,7 +51,6 @@ set(INCLUDE_DIRS
     "protocols"
     "audio_processing"
     "ble_config"
-    #"D:/tools/Espressif/frameworks/esp-idf-v5.3.2/components/bt/host/nimble/nimble/nimble/transport/include" 
 )
 
 # 只添加存在的 NimBLE 目录
