@@ -160,19 +160,27 @@ void BleConfig::gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *
 void BleConfig::Initialize() {
     g_ble_config_instance = this;   // 保存实例指针
     ESP_LOGI(TAG, "%s @Initialize: 开始初始化BLE配网模块...", GetTimeString().c_str());
+    
+    // 重置看门狗，防止初始化过程中触发超时
+    esp_task_wdt_reset();
 
     // 完全避免尝试清理资源的过程，直接初始化
     ESP_LOGI(TAG, "%s @Initialize: 跳过清理步骤，直接初始化NimBLE", GetTimeString().c_str());
 
     // 1. 初始化NVS
     ESP_LOGI(TAG, "%s @Initialize: 初始化NVS存储...", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，NVS初始化前
     esp_err_t nvs_ret = nvs_flash_init();
+    esp_task_wdt_reset(); // 重置看门狗，NVS初始化后
 
     // 如果NVS分区已满或版本不匹配，则擦除重新初始化
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "%s @Initialize: NVS需要擦除", GetTimeString().c_str());
+        esp_task_wdt_reset(); // 重置看门狗，NVS擦除前
         nvs_flash_erase();
+        esp_task_wdt_reset(); // 重置看门狗，NVS擦除后
         nvs_ret = nvs_flash_init();
+        esp_task_wdt_reset(); // 重置看门狗，NVS重新初始化后
     }
 
     if (nvs_ret != ESP_OK) {
@@ -180,23 +188,32 @@ void BleConfig::Initialize() {
         return;
     }
     ESP_LOGI(TAG, "%s @Initialize: NVS初始化成功", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，NVS初始化后
 
     // 2. 解析服务和特征UUID
     ESP_LOGI(TAG, "%s @Initialize: 解析BLE服务UUID", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，UUID解析前
     parse_all_uuids();
+    esp_task_wdt_reset(); // 重置看门狗，UUID解析后
 
     // 3. 打印当前内存状态
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     ESP_LOGI(TAG, "%s @Initialize: BLE初始化前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    esp_task_wdt_reset(); // 重置看门狗
 
     // 检查内存是否足够
     if (free_heap < 60000) {
         ESP_LOGW(TAG, "%s @Initialize: 可用内存较低，但仍将继续初始化", GetTimeString().c_str());
+        esp_task_wdt_reset(); // 重置看门狗，堆检查
+        heap_caps_check_integrity_all(true); // 进行堆检查
+        esp_task_wdt_reset(); // 重置看门狗，堆检查后
     }
 
     // 4. 初始化NimBLE
     ESP_LOGI(TAG, "%s @Initialize: 初始化NimBLE端口", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，NimBLE初始化前
     esp_err_t rc = nimble_port_init();
+    esp_task_wdt_reset(); // 重置看门狗，NimBLE初始化后
     if (rc != ESP_OK) {
         ESP_LOGE(TAG, "%s @Initialize: NimBLE端口初始化失败: %d", GetTimeString().c_str(), rc);
         return;
@@ -205,6 +222,7 @@ void BleConfig::Initialize() {
 
     // 5. 配置BLE安全参数
     ESP_LOGI(TAG, "%s @Initialize: 配置BLE安全参数", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，安全参数配置前
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_mitm = 1;
@@ -215,6 +233,7 @@ void BleConfig::Initialize() {
 
     // 6. 设置回调函数
     ESP_LOGI(TAG, "%s @Initialize: 设置BLE回调函数", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，回调设置前
     ble_hs_cfg.reset_cb = ble_on_reset;
     ble_hs_cfg.sync_cb = ble_on_sync;
     ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
@@ -222,10 +241,13 @@ void BleConfig::Initialize() {
 
     // 7. 初始化GATT服务器
     ESP_LOGI(TAG, "%s @Initialize: 初始化GATT服务器", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，GATT初始化前
     gatt_svr_init();
+    esp_task_wdt_reset(); // 重置看门狗，GATT初始化后
 
     // 8. 设置设备名称
     ESP_LOGI(TAG, "%s @Initialize: 设置BLE设备名称", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，设置设备名称前
     int name_rc = ble_svc_gap_device_name_set(kBleDeviceName);  //"DuDu-BLE"
     if (name_rc != 0) {
         ESP_LOGW(TAG, "%s @Initialize: 设置设备名称失败: %d", GetTimeString().c_str(), name_rc);
@@ -233,10 +255,13 @@ void BleConfig::Initialize() {
 
     // 9. 初始化BLE存储
     ESP_LOGI(TAG, "%s @Initialize: 初始化BLE存储", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，BLE存储初始化前
     ble_store_config_init();
+    esp_task_wdt_reset(); // 重置看门狗，BLE存储初始化后
 
     // 10. 启动BLE主机任务
     ESP_LOGI(TAG, "%s @Initialize: 创建BLE主机任务", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，任务创建前
     xTaskCreatePinnedToCore(
         ble_host_task, 
         "ble_host_task",
@@ -248,9 +273,12 @@ void BleConfig::Initialize() {
     );
 
     // 等待一小段时间，让BLE任务启动
+    esp_task_wdt_reset(); // 重置看门狗，延迟前
     vTaskDelay(pdMS_TO_TICKS(100));
+    esp_task_wdt_reset(); // 重置看门狗，延迟后
     
     ESP_LOGI(TAG, "%s @Initialize: BLE初始化完成", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗，初始化完成
 }
 
 int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
