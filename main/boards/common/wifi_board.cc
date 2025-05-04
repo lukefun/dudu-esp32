@@ -35,6 +35,7 @@ static const char *TAG = "WifiBoard";    // <--- 确保 TAG 已定义
 // Forward declaration for timeout task
 static void WifiConfigTimeoutTask(void *pvParameters);
 
+// 获取当前时间字符串函数 - 提前声明，确保在WdtGuard类中可用
 static std::string GetTimeString() {
     // 获取当前时间点
     auto now = std::chrono::system_clock::now();
@@ -52,6 +53,35 @@ static std::string GetTimeString() {
 
     return std::string(buffer);
 }
+
+// RAII 风格的看门狗管理类，通过构造函数注册看门狗，析构函数自动注销看门狗
+class WdtGuard {
+    public:
+        WdtGuard() {
+            // 先检查任务是否已订阅看门狗，避免重复添加导致错误
+            esp_err_t err = esp_task_wdt_add(NULL);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "%s @WdtGuard：看门狗已注册", GetTimeString().c_str());
+            } else if (err == ESP_ERR_INVALID_ARG) {
+                // 任务已经订阅了看门狗，记录日志但不报错
+                ESP_LOGW(TAG, "%s @WdtGuard：任务已订阅看门狗，跳过注册", GetTimeString().c_str());
+            } else {
+                // 其他错误则使用 ESP_ERROR_CHECK 处理
+                ESP_ERROR_CHECK(err);
+                ESP_LOGE(TAG, "@WdtGuard：看门狗注册失败，错误码: %d", err);
+            }
+        }
+        
+        ~WdtGuard() {
+            esp_task_wdt_delete(NULL);  // 自动注销看门狗
+            ESP_LOGI(TAG, "%s @WdtGuard：看门狗已注销", GetTimeString().c_str());
+        }
+    
+        // 禁止拷贝构造和赋值操作，确保资源唯一性
+        WdtGuard(const WdtGuard&) = delete;
+        WdtGuard& operator=(const WdtGuard&) = delete;
+    };
+    
 
 WifiBoard::WifiBoard() {
     ESP_LOGI(TAG, "%s @WifiBoard：初始化 WifiBoard", GetTimeString().c_str());
@@ -120,42 +150,47 @@ bool WifiBoard::SetupBleCallbacks() {
     return true;
 }
 
-// 连接WiFi，启动配网超时任务，并在成功或失败时更新UI
+
 bool WifiBoard::InitializeAndStartBleAdvertising() {
     ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：初始化并启动 BLE 广播", GetTimeString().c_str());
     auto& ble_config = BleConfig::GetInstance();          // 获取 ble_config 实例
     // auto& application = Application::GetInstance();    // 获取 application 实例 (已注释掉，因为后续代码未使用)
 
+    // 重置看门狗，防止初始化过程中触发超时
+    esp_task_wdt_reset();
+    
     // 检查内存并采取保守策略：如果内存不足，先进行堆检查
     int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL); // 获取当前可用内存
     if (free_sram < 60000) {
         ESP_LOGW(TAG, "%s @InitializeAndStartBleAdvertising：内存较低 (%d字节)，采用保守策略", GetTimeString().c_str(), free_sram);
 
+        esp_task_wdt_reset(); // 重置看门狗，防止堆检查过程中触发超时
         heap_caps_check_integrity_all(true);          // 进行堆检查
         // 当设置为 true 时，如果该函数检测到任何堆损坏 (Heap Corruption)，它会 立即调用 abort() 函数，
         // 直接让程序中止执行 。它不会返回错误代码让您的程序去判断和处理，而是直接停止。
         // 这是为了确保在内存不足的情况下，程序不会继续执行可能导致不可预测的后果的代码。
+        esp_task_wdt_reset(); // 重置看门狗
         vTaskDelay(pdMS_TO_TICKS(500));
+        esp_task_wdt_reset(); // 重置看门狗
     }
 
     // 初始化 BLE
     ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：开始初始化 BLE", GetTimeString().c_str());
     free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);   // 获取当前可用内存
     ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：BLE 初始化前内存: %d 字节", GetTimeString().c_str(), free_sram);
-    ble_config.Initialize();                                    // 初始化 BLE
+    
+    esp_task_wdt_reset(); // 重置看门狗，BLE初始化前
+    ble_config.Initialize();                                    // 初始化 BLE - 这是一个耗时操作
+    esp_task_wdt_reset(); // 重置看门狗，BLE初始化后
+    
     ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：BLE 初始化完成", GetTimeString().c_str());
     free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);   // 获取当前可用内存
     ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：BLE 初始化后内存: %d 字节", GetTimeString().c_str(), free_sram);
+    
+    esp_task_wdt_reset(); // 重置看门狗，延迟前
     vTaskDelay(pdMS_TO_TICKS(300));                             // 短暂延迟，确保 BLE 初始化完成
+    esp_task_wdt_reset(); // 重置看门狗，延迟后
 
-    // 开始广播 (注释掉：Initialize() 内部已通过回调启动)
-    // ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：开始 BLE 广播", GetTimeString().c_str());
-    // if (!ble_config.StartAdvertising()) {                  // 启动 BLE 广播
-    //     ESP_LOGE(TAG, "@InitializeAndStartBleAdvertising：BLE 广播启动失败");
-    //     application.Alert("蓝牙配网启动失败", "请重启设备", "", Lang::Sounds::P3_ERR_PIN);
-    //     return false; // 返回失败
-    // }
-    // ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：BLE 广播已启动", GetTimeString().c_str());
     return true; // 返回成功
 }
 
@@ -222,30 +257,36 @@ bool WifiBoard::StartWifiConfigTimeoutTask() {
 
 // 进入 WiFi 配网模式 (同步实现)
 void WifiBoard::EnterWifiConfigMode() {
-    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：进入 WiFi 配网模式 (同步版)", GetTimeString().c_str());
-    // 注册当前任务到看门狗（最佳实践）
-    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    // 如果将来 EnterWifiConfigMode() 被其他函数直接调用，
+    // 恢复创建 WdtGuard 对象的代码，以确保看门狗资源的管理。
+    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：进入 WiFi BLE 配网模式", GetTimeString().c_str());
 
     // 1. 准备阶段：内存检查和状态设置
     int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：内存状态 - 可用: %u, 最小: %u", GetTimeString().c_str(), free_sram, min_free_sram);
+    esp_task_wdt_reset(); // 重置看门狗
 
     auto& application = Application::GetInstance();
+    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：Application 实例获取成功", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗
+
+    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：设备状态设置为 WiFi配网中（前）", GetTimeString().c_str());
     application.SetDeviceState(kDeviceStateWifiConfiguring);     // 设置设备状态为配网中
-    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：设备状态设置为 WiFi配网中", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：设备状态设置为 WiFi配网中（后）", GetTimeString().c_str());
+    esp_task_wdt_reset(); // 重置看门狗
 
     // 2. 设置 BLE 回调
     if (!SetupBleCallbacks()) {
         ESP_LOGE(TAG, "@EnterWifiConfigMode：设置 BLE 回调失败");
         application.Alert(Lang::Strings::ERROR, "BLE回调设置失败", "sad", Lang::Sounds::P3_ERR_PIN);
-        return; // 无法继续
+        return;
     }
 
     // 3. 初始化并启动 BLE 广播
     if (!InitializeAndStartBleAdvertising()) {
         ESP_LOGE(TAG, "@EnterWifiConfigMode：初始化或启动 BLE 广播失败");
-        return; // 无法继续
+        return; 
     }
 
     // 4. 播放提示音和显示信息
@@ -275,8 +316,7 @@ void WifiBoard::EnterWifiConfigMode() {
             // 连接 WiFi
             ConnectWifiByBle(ble_ssid_, ble_password_);
             ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi 连接流程已执行", GetTimeString().c_str());
-            // 注销当前任务出看门狗
-            esp_task_wdt_delete(NULL);
+           
             return; // 连接流程已执行，退出函数
         }
 
@@ -287,8 +327,6 @@ void WifiBoard::EnterWifiConfigMode() {
 
     // 超时处理
     ESP_LOGW(TAG, "%s @EnterWifiConfigMode：配网超时 (%d 分钟)", GetTimeString().c_str(), config_timeout_minutes_);
-    // 注销当前任务出看门狗
-    esp_task_wdt_delete(NULL);
     
     // 停止 BLE 并清理资源
     BleConfig::GetInstance().StopAdvertising();
@@ -344,13 +382,15 @@ static void WifiConfigTimeoutTask(void *pvParameters) {
     vTaskDelete(nullptr);
 }
 
-// 新增：BLE配网流程中的WiFi连接实现 - 优化内存使用，避免栈溢出
+// 新增：BLE配网流程中的WiFi连接实现
 void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& password) {
+    // 注意：此方法由 EnterWifiConfigMode 调用，看门狗已由 EnterWifiConfigMode 中的 WdtGuard 管理
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE配网流程 - 准备连接WiFi SSID: %s", GetTimeString().c_str(), ssid.c_str());
     
     // 检查当前内存状态
     int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    esp_task_wdt_reset(); // 重置看门狗
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：连接WiFi前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
              GetTimeString().c_str(), free_sram, min_free_sram);
     
@@ -361,6 +401,7 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     
     // 短暂延时，让BLE任务有时间处理完成当前操作
     vTaskDelay(pdMS_TO_TICKS(100));
+    esp_task_wdt_reset(); // 重置看门狗
     
     // 添加认证信息
     auto& wifi_station = WifiStation::GetInstance();
@@ -370,18 +411,23 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     // 再次检查内存状态
     free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    esp_task_wdt_reset(); // 重置看门狗
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：启动WiFi前内存状态 - 当前可用: %u 字节, 最小可用: %u 字节", 
              GetTimeString().c_str(), free_sram, min_free_sram);
     
     // 如果可用内存过低，尝试释放一些内存
     if (free_sram < 60000) {
+        esp_task_wdt_reset(); // 重置看门狗
         ESP_LOGW(TAG, "%s @ConnectWifiByBle：可用内存较低，尝试释放资源...", GetTimeString().c_str());
         // 停止BLE广播以释放资源
         BleConfig::GetInstance().StopAdvertising();
+        esp_task_wdt_reset(); // 重置看门狗
         // 强制执行垃圾回收
         heap_caps_check_integrity_all(true);
+        esp_task_wdt_reset(); // 重置看门狗
         // 再次检查内存
         free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        esp_task_wdt_reset();
         ESP_LOGI(TAG, "%s @ConnectWifiByBle：释放资源后内存状态 - 当前可用: %u 字节", GetTimeString().c_str(), free_sram);
     }
     
@@ -390,28 +436,28 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（1），防止WiFi初始化过程中触发看门狗超时", GetTimeString().c_str());
     
     // 启动WiFi
-    wifi_station.Start();
+    wifi_station.Start();   // 启动WiFi，内存密集型操作
+    esp_task_wdt_reset();   // 重置看门狗
     vTaskDelay(pdMS_TO_TICKS(500)); // 短暂延时，让WiFi任务有时间初始化
+    esp_task_wdt_reset();   // 重置看门狗
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi已启动", GetTimeString().c_str());
-
-    // 重置任务看门狗
-    esp_task_wdt_reset();
-    ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（2），防止WiFi连接过程中触发看门狗超时", GetTimeString().c_str());
     
     // 等待连接结果，使用更长的超时时间
-    ESP_LOGI(TAG, "%s @ConnectWifiByBle：等待WiFi连接结果，超时时间: 20秒", GetTimeString().c_str());
-    bool connected = wifi_station.WaitForConnected(20000); // 增加到20秒
-
-    // 连接过程完成，再次重置看门狗
-    esp_task_wdt_reset();
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：等待WiFi连接结果，超时时间: 8秒", GetTimeString().c_str());
+    bool connected = wifi_station.WaitForConnected(8000); // 等待连接结果，超时时间为8秒
+    esp_task_wdt_reset();   // 重置看门狗
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（3），防止WiFi连接过程中触发看门狗超时", GetTimeString().c_str());
 
     if (connected) {
         ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
         // 发送连接成功状态
+        esp_task_wdt_reset();   // 重置看门狗
         BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTED);
         // 短暂延时确保状态发送成功
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(500));
+        esp_task_wdt_reset();
+
         // 删除超时任务
         if (wifi_timeout_task_handle_ != nullptr) {
             ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功，删除配网超时任务", GetTimeString().c_str());
@@ -429,6 +475,7 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     } else {
         ESP_LOGW(TAG, "%s @ConnectWifiByBle：WiFi连接失败，重新进入配网状态！", GetTimeString().c_str());
         // 停止WiFi连接
+        esp_task_wdt_reset();
         wifi_station.Stop();
         
         // 发送连接失败状态
@@ -450,6 +497,7 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
         // 发送失败状态并等待足够长的时间确保发送成功
         ESP_LOGW(TAG, "%s @ConnectWifiByBle：发送WiFi连接失败状态: %d", GetTimeString().c_str(), status);
         BleConfig::GetInstance().SendWifiStatus(status);
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(500));
         
         // 显示连接失败提示
@@ -477,6 +525,7 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
 
 // 尝试连接已保存的 WiFi 网络
 bool WifiBoard::TryConnectSavedWifi() {
+    // 注意：此方法由 StartNetwork 调用，看门狗已由 StartNetwork 中的 WdtGuard 管理
     ESP_LOGI(TAG, "%s @TryConnectSavedWifi：尝试连接已保存的 WiFi 网络", GetTimeString().c_str());
     
     auto& wifi_station = WifiStation::GetInstance();    // 获取 WiFi 实例
@@ -534,21 +583,34 @@ bool WifiBoard::TryConnectSavedWifi() {
 
 // 启动配网模式
 void WifiBoard::StartConfigMode() {
+    // 注意：此方法由 StartNetwork 调用，看门狗已由 StartNetwork 中的 WdtGuard 管理
     ESP_LOGI(TAG, "%s @StartConfigMode：启动配网模式", GetTimeString().c_str());
+    
+    // 重置看门狗，防止播放提示音过程中触发超时
+    esp_task_wdt_reset();
     
     // 播放BLE配网提示音
     auto& application = Application::GetInstance();
     ESP_LOGI(TAG, "%s @StartConfigMode：播放BLE配网提示音", GetTimeString().c_str());
     application.PlaySound(Lang::Sounds::P3_WIFI_CONFIG_REQUIRED);
+    
+    // 重置看门狗，防止延时过程中触发超时
+    esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(500)); // 稍作延时
+    esp_task_wdt_reset(); // 延时后再次重置看门狗
 
     // 进入 BLE 配网模式
     wifi_config_mode_ = true;   // 标记进入配网模式
+    ESP_LOGI(TAG, "%s @StartConfigMode：准备进入BLE配网模式", GetTimeString().c_str());
+    esp_task_wdt_reset();       // 进入配网模式前重置看门狗
     EnterWifiConfigMode();      // 进入 BLE 配网模式
 }
 
 // 主网络启动方法
 void WifiBoard::StartNetwork() {
+    // 创建 WdtGuard 对象，自动注册看门狗，函数结束时自动注销
+    WdtGuard wdt_guard;
+
     ESP_LOGI(TAG, "%s @StartNetwork：开始启动网络", GetTimeString().c_str());
 
     // 检查 NVS 中是否有 WiFi 配置
@@ -563,14 +625,14 @@ void WifiBoard::StartNetwork() {
     if (wifi_config_mode_) {
         ESP_LOGI(TAG, "%s @StartNetwork：检测到强制配网标志，直接进入配网模式", GetTimeString().c_str());
         StartConfigMode();
-        return;
+        return;  // 函数结束，WdtGuard 析构函数自动注销看门狗
     }
 
     // 如果 NVS 为空，直接进入配网模式
     if (nvs_is_empty) {
         ESP_LOGI(TAG, "%s @StartNetwork：NVS 为空，进入配网模式", GetTimeString().c_str());
         StartConfigMode();
-        return;
+        return;  // 函数结束，WdtGuard 析构函数自动注销看门狗
     }
 
     // 如果 NVS 非空，尝试连接 WiFi
@@ -583,6 +645,7 @@ void WifiBoard::StartNetwork() {
         StartConfigMode();
     }
     // 连接成功则直接返回，继续正常启动流程
+    // 函数结束时，WdtGuard 析构函数自动注销看门狗
 }
 
 Http* WifiBoard::CreateHttp() {
