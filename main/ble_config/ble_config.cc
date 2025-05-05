@@ -10,6 +10,7 @@
 #include "esp_task_wdt.h"  // 添加任务看门狗头文件
 #include "freertos/FreeRTOS.h"  // FreeRTOS头文件
 #include "freertos/timers.h"    // FreeRTOS定时器头文件
+#include "../system_info.h"  // 引入SystemInfo类定义
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -245,10 +246,33 @@ void BleConfig::Initialize() {
     gatt_svr_init();
     esp_task_wdt_reset(); // 重置看门狗，GATT初始化后
 
-    // 8. 设置设备名称
+    // // 8. 设置设备名称
+    // ESP_LOGI(TAG, "%s @Initialize: 设置BLE设备名称", GetTimeString().c_str());
+    // esp_task_wdt_reset(); // 重置看门狗，设置设备名称前
+    // int name_rc = ble_svc_gap_device_name_set(kBleDeviceName);  //"DuDu-BLE"
+    // if (name_rc != 0) {
+    //     ESP_LOGW(TAG, "%s @Initialize: 设置设备名称失败: %d", GetTimeString().c_str(), name_rc);
+    // }
+
+    // 8. 设置设备名称 - 格式：DUDU-BLE-[MAC后6位]
     ESP_LOGI(TAG, "%s @Initialize: 设置BLE设备名称", GetTimeString().c_str());
     esp_task_wdt_reset(); // 重置看门狗，设置设备名称前
-    int name_rc = ble_svc_gap_device_name_set(kBleDeviceName);  //"DuDu-BLE"
+
+    // 获取MAC地址
+    std::string mac_address = SystemInfo::GetMacAddress();
+    // 提取MAC地址后6位（去除冒号）
+    std::string mac_suffix;
+    for (size_t i = mac_address.length() - 8; i < mac_address.length(); i++) {
+        if (mac_address[i] != ':') {
+            mac_suffix += mac_address[i];
+        }
+    }
+    // 组合设备名称
+    std::string device_name = std::string(kBleDeviceName) + "-" + mac_suffix;
+    ESP_LOGI(TAG, "%s @Initialize: 设备名称: %s", GetTimeString().c_str(), device_name.c_str());
+
+    // 设置设备名称
+    int name_rc = ble_svc_gap_device_name_set(device_name.c_str());
     if (name_rc != 0) {
         ESP_LOGW(TAG, "%s @Initialize: 设置设备名称失败: %d", GetTimeString().c_str(), name_rc);
     }
