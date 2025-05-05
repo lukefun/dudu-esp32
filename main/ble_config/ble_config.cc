@@ -440,8 +440,10 @@ void BleConfig::ble_advertise(void) {
     do {
         struct ble_gap_adv_params adv_params;   // 广播参数
         struct ble_hs_adv_fields fields;        // 广播字段
+        struct ble_hs_adv_fields rsp_fields;    // 扫描响应字段
         
         memset(&fields, 0, sizeof fields);      // 清空广播字段
+        memset(&rsp_fields, 0, sizeof rsp_fields); // 清空扫描响应字段
         
         // 使用最简单的广播字段配置
         fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;    // 广播类型
@@ -452,13 +454,25 @@ void BleConfig::ble_advertise(void) {
         fields.name_len = strlen(dev_name);                                // 广播名称长度
         fields.name_is_complete = 1;                                       // 使用完整名称
 
+        // 将服务UUID放入扫描响应包，便于小程序过滤
+        rsp_fields.num_uuids128 = 1;
+        rsp_fields.uuids128 = &gatt_svr_svc_wifi_config_uuid;
+
         ESP_LOGI(TAG, "%s @ble_advertise: 设置广播字段，设备名称: %s", GetTimeString().c_str(), dev_name);
 
         int rc = ble_gap_adv_set_fields(&fields);
         if (rc != 0) {
             ESP_LOGE(TAG, "%s @ble_advertise: 设置广播字段失败: %d，重试次数: %d/%d", GetTimeString().c_str(), rc, retry_count + 1, MAX_RETRY);
             retry_count++;
-            vTaskDelay(pdMS_TO_TICKS(1000));  // 延迟1秒后重试
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        // 设置扫描响应字段
+        rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+        if (rc != 0) {
+            ESP_LOGE(TAG, "%s @ble_advertise: 设置扫描响应字段失败: %d，重试次数: %d/%d", GetTimeString().c_str(), rc, retry_count + 1, MAX_RETRY);
+            retry_count++;
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
