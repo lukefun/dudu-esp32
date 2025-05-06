@@ -592,7 +592,8 @@ void WifiBoard::StartConfigMode() {
     // 播放BLE配网提示音
     auto& application = Application::GetInstance();
     ESP_LOGI(TAG, "%s @StartConfigMode：播放BLE配网提示音", GetTimeString().c_str());
-    application.PlaySound(Lang::Sounds::P3_WIFI_CONFIG_REQUIRED);
+    application.PlaySound(Lang::Sounds::P3_WELCOME);
+    // application.PlaySound(Lang::Sounds::P3_WIFI_CONFIG_REQUIRED);
     
     // 重置看门狗，防止延时过程中触发超时
     esp_task_wdt_reset();
