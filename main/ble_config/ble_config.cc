@@ -305,37 +305,53 @@ void BleConfig::Initialize() {
     esp_task_wdt_reset(); // 重置看门狗，初始化完成
 }
 
+// 新增的函数，用于处理GATT特征值的访问，包括SSID、Password和Control，并更新状态（GATT特征值：）
+// GATT特征值：
+// 1. SSID特征值：用于存储WiFi的SSID
+// 2. Password特征值：用于存储WiFi的Password
+// 3. Control特征值：用于控制WiFi的连接状态
 int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                  struct ble_gatt_access_ctxt *ctxt, void *arg) {
     const char* char_name = (const char*)arg;
     int rc = 0;
 
+    // 确保全局实例存在
     if (!g_ble_config_instance) {
         ESP_LOGE(TAG, "%s @gatt_svr_chr_access: GATT访问失败: 全局实例不存在", GetTimeString().c_str());
         return BLE_ATT_ERR_UNLIKELY;
     }
 
+    // 根据特征值名称进行处理
     switch (ctxt->op) {
-        case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);
+        case BLE_GATT_ACCESS_OP_WRITE_CHR: {    // 写入特征值
+            uint16_t data_len = OS_MBUF_PKTLEN(ctxt->om);    // 获取数据长度
             ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 收到特征值写入请求: %s, 数据长度: %d", GetTimeString().c_str(), char_name, data_len);
 
             // ==== 新增数据校验开始 ====
-            // 控制命令必须为1字节
+            // 【控制命令】必须为1字节，且必须为0x01
             if(strcmp(char_name, "control") == 0 && data_len != CONTROL_CMD_LEN) {
                 ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 控制命令长度无效: %d, 应为1字节", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            }else if(strcmp(char_name, "control") == 0) {
+                ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据 - 控制命令: 0x%02x", GetTimeString().c_str(), data_len, *(uint8_t*)OS_MBUF_PKTPTR(ctxt->om));
             }
-            // SSID最大32字节
+
+            // 【SSID】最大32字节
             if(strcmp(char_name, "ssid") == 0 && data_len > MAX_SSID_LEN) {
                 ESP_LOGE(TAG, "%s @gatt_svr_chr_access: SSID长度过长: %d/32", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN; 
+            }else if(strcmp(char_name, "ssid") == 0) {
+                ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据 - SSID: %s", GetTimeString().c_str(), data_len, (char*)OS_MBUF_PKTPTR(ctxt->om));
             }
-            // 密码最大64字节
+
+            // 【密码】最大64字节
             if(strcmp(char_name, "password") == 0 && data_len > MAX_PASSWORD_LEN) {
                 ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 密码长度过长: %d/64", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            }else if(strcmp(char_name, "password") == 0) {
+                ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据 - WiFi密码: %s", GetTimeString().c_str(), data_len, (char*)OS_MBUF_PKTPTR(ctxt->om));
             }
+
             // ==== 新增数据校验结束 ====
 
             if (data_len > 256) {   // 原有长度检查
@@ -349,6 +365,7 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 return BLE_ATT_ERR_INSUFFICIENT_RES;
             }
             
+            // 转换数据格式，并添加结束符
             rc = ble_hs_mbuf_to_flat(ctxt->om, data, data_len, NULL);
             if (rc != 0) {
                 ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 数据转换失败: %d", GetTimeString().c_str(), rc);
@@ -360,26 +377,32 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据: %.*s (十六进制: %s)", 
                     GetTimeString().c_str(), data_len, data_len, data, bytes_to_hex(data, data_len));
 
-            if (char_name) {
+            // 处理接收到的数据
+            if (char_name) {    // 确保char_name不为空
                 if (strcmp(char_name, "ssid") == 0) {
+                    // 保存SSID 到成员变量，将接收到的 WiFi SSID 数据（data 指针，长度 data_len）赋值给 BleConfig 实例的成员变量 received_ssid_ 。
                     g_ble_config_instance->received_ssid_.assign((char*)data, data_len);
                     ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 保存SSID: %s", GetTimeString().c_str(), g_ble_config_instance->received_ssid_.c_str());
                 } else if (strcmp(char_name, "password") == 0) {
+                    // 保存密码 到成员变量，将接收到的 WiFi 密码 数据（data 指针，长度 data_len）赋值给 BleConfig 实例的成员变量 received_password_ 。
                     g_ble_config_instance->received_password_.assign((char*)data, data_len);
                     ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 保存密码: %s", GetTimeString().c_str(), g_ble_config_instance->received_password_.c_str());
                 } else if (strcmp(char_name, "control") == 0 && 
-                          data_len == 1 && data[0] == WIFI_CONTROL_CMD_CONNECT) {
+                          data_len == 1 && data[0] == WIFI_CONTROL_CMD_CONNECT) {    // 连接WiFi命令，且数据长度为1字节，且数据为0x01，则连接WiFi，并清空SSID和密码
                     ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 收到连接WiFi命令", GetTimeString().c_str());
                     if (!g_ble_config_instance->received_ssid_.empty() && 
                         !g_ble_config_instance->received_password_.empty()) {
+                        // 调用凭据接收回调，并清空SSID和密码
                         ESP_LOGI(TAG, "%s @gatt_svr_chr_access: SSID和密码已接收，准备连接WiFi", GetTimeString().c_str());
                         if (g_ble_config_instance->credentials_received_cb_) {
                             ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 调用凭据接收回调", GetTimeString().c_str());
-                            g_ble_config_instance->credentials_received_cb_(
-                                g_ble_config_instance->received_ssid_,
-                                g_ble_config_instance->received_password_);
+
+                            g_ble_config_instance->credentials_received_cb_(    // 调用凭据接收回调
+                                g_ble_config_instance->received_ssid_,          // SSID
+                                g_ble_config_instance->received_password_);     // Password
                         }
-                        if (g_ble_config_instance->connect_wifi_cb_) {
+
+                        if (g_ble_config_instance->connect_wifi_cb_) {          // 调用WiFi连接回调
                             ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 调用WiFi连接回调", GetTimeString().c_str());
                             g_ble_config_instance->connect_wifi_cb_();
                         }
@@ -388,6 +411,7 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                     }
                 }
             }
+            // 释放内存
             free(data);
             break;
         }
@@ -640,6 +664,7 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     // 喂任务看门狗，防止长时间操作导致看门狗超时
     esp_task_wdt_reset();
     
+    // 检查是否有连接
     if (conn_handle_ == BLE_HS_CONN_HANDLE_NONE || status_val_handle_ == 0) {
         ESP_LOGW(TAG, "%s @SendWifiStatus: 无法发送状态，没有连接或句柄无效 (conn_handle=%d, status_val_handle=%d)", 
                 GetTimeString().c_str(), conn_handle_, status_val_handle_);
@@ -648,21 +673,25 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
 
     // 分配内存前先检查可用堆内存
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    ESP_LOGI(TAG, "%s @SendWifiStatus: 当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    ESP_LOGI(TAG, "%s @SendWifiStatus: 分配内存前先检查可用堆内存，当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
     
+    // 分配内存
     struct os_mbuf *om = ble_hs_mbuf_from_flat(&status, sizeof(status));
     if (!om) {
-        ESP_LOGE(TAG, "%s @SendWifiStatus: 为通知分配内存失败", GetTimeString().c_str());
+        ESP_LOGE(TAG, "%s @SendWifiStatus: 通知：分配内存失败", GetTimeString().c_str());
         return;
     }
 
     // === 修正重试机制：只在循环内发送，不再多发一次 ===
     // 增加短暂延时，确保BLE栈有足够时间处理
     int rc = -1;
+
+    // 重试发送通知
     for(int retry = 0; retry < NOTIFY_RETRY_COUNT; retry++) {
         // 每次发送前喂狗
         esp_task_wdt_reset();
         
+        // 发送通知，如果成功则退出循环，否则继续重试
         rc = ble_gatts_notify_custom(conn_handle_, status_val_handle_, om);
         if(rc == 0) {
             ESP_LOGI(TAG, "%s @SendWifiStatus: WiFi状态通知发送成功: %d", GetTimeString().c_str(), status);
@@ -673,6 +702,7 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
         
         // 延时前再次喂狗
         esp_task_wdt_reset();
+        // 延时后再次尝试发送通知
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_RETRY_DELAY_MS));
     }
     if (rc != 0) {
@@ -695,7 +725,7 @@ void BleConfig::SetConnectWifiCallback(std::function<void()> cb) {
     connect_wifi_cb_ = cb;
 }
 
-
+// 处理 GATT 事件，如连接建立、断开等，并调用相应的回调函数，如凭据接收、WiFi连接等，以实现设备与手机的通信，并在手机端显示连接状态和接收的 Wi-Fi 凭据
 int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
     // 确保实例存在
     struct ble_gap_conn_desc desc;
