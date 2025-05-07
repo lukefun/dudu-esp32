@@ -597,18 +597,20 @@ void BleConfig::ble_host_task(void *param) {
         
         // 获取事件队列
         struct ble_npl_eventq *eventq = nimble_port_get_dflt_eventq();        // 接收BLE事件
-        // 处理事件队列，如果有事件则处理，没有事件则等待
-        if (eventq != NULL) {
-            // 从事件队列中获取事件并处理
-            struct ble_npl_event *ev = ble_npl_eventq_get(eventq, pdMS_TO_TICKS(100));
-            if (ev) {
-                ESP_LOGD(TAG, "%s @ble_host_task: 处理事件", GetTimeString().c_str());
-                ble_npl_event_run(ev);  // 处理事件，如更新连接状态等
-                // 事件处理完成后释放内存
-                ble_npl_eventq_remove(eventq, ev);
-            }
+        if (eventq == NULL) {
+            ESP_LOGW(TAG, "%s @ble_host_task: eventq为空，跳过本轮处理", GetTimeString().c_str());
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
-        
+        // 处理事件队列，如果有事件则处理，没有事件则等待
+        struct ble_npl_event *ev = ble_npl_eventq_get(eventq, pdMS_TO_TICKS(100));
+        if (ev) {
+            assert(ev != NULL);
+            ESP_LOGD(TAG, "%s @ble_host_task: 处理事件", GetTimeString().c_str());
+            ble_npl_event_run(ev);  // 处理事件，如更新连接状态等
+            // 事件处理完成后释放内存
+            ble_npl_eventq_remove(eventq, ev);
+        }
         esp_task_wdt_reset();           // 喂狗，防止任务卡死
         vTaskDelay(pdMS_TO_TICKS(10));  // 短暂延时，避免过快占用CPU资源
     }
@@ -718,6 +720,11 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
         return 0;
 
     case BLE_GAP_EVENT_CONNECT:
+        if (!g_ble_config_instance) {
+            ESP_LOGE(TAG, "%s @ble_gap_event: CONNECT事件处理失败：全局实例不存在", GetTimeString().c_str());
+            assert(g_ble_config_instance != nullptr);
+            return 0;
+        }
         ESP_LOGI(TAG, "%s @ble_gap_event: BLE连接事件 - 状态: %d", GetTimeString().c_str(), event->connect.status);
         if (event->connect.status == 0) {
             ESP_LOGI(TAG, "%s @ble_gap_event: BLE设备已连接，连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
@@ -740,6 +747,11 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
+        if (!g_ble_config_instance) {
+            ESP_LOGE(TAG, "%s @ble_gap_event: DISCONNECT事件处理失败：全局实例不存在", GetTimeString().c_str());
+            assert(g_ble_config_instance != nullptr);
+            return 0;
+        }
         ESP_LOGI(TAG, "%s @ble_gap_event: BLE断开连接 - 原因: %d", GetTimeString().c_str(), event->disconnect.reason);
         g_ble_config_instance->conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
         ESP_LOGI(TAG, "%s @ble_gap_event: 连接已断开，重新开始广播", GetTimeString().c_str());
@@ -747,11 +759,38 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
+        if (!g_ble_config_instance) {
+            ESP_LOGE(TAG, "%s @ble_gap_event: ADV_COMPLETE事件处理失败：全局实例不存在", GetTimeString().c_str());
+            assert(g_ble_config_instance != nullptr);
+            return 0;
+        }
         ESP_LOGI(TAG, "%s @ble_gap_event: BLE广播完成事件 - 状态: %d", GetTimeString().c_str(), event->adv_complete.reason);
-        // ESP_LOGI(TAG, "%s @ble_gap_event: BLE广播完成事件 - 实例: %d, 状态: %d", GetTimeString().c_str(), event->adv_complete.instance, event->adv_complete.reason);
+        return 0;
+
+    case BLE_GAP_EVENT_MTU:
+        if (!g_ble_config_instance) {
+            ESP_LOGE(TAG, "%s @ble_gap_event: MTU事件处理失败：全局实例不存在", GetTimeString().c_str());
+            assert(g_ble_config_instance != nullptr);
+            return 0;
+        }
+        ESP_LOGI(TAG, "%s @ble_gap_event: MTU交换事件 - 连接句柄: %d, MTU: %d", GetTimeString().c_str(), event->mtu.conn_handle, event->mtu.value);
+        return 0;
+
+    case BLE_GAP_EVENT_CONN_UPDATE:
+        if (!g_ble_config_instance) {
+            ESP_LOGE(TAG, "%s @ble_gap_event: CONN_UPDATE事件处理失败：全局实例不存在", GetTimeString().c_str());
+            assert(g_ble_config_instance != nullptr);
+            return 0;
+        }
+        ESP_LOGI(TAG, "%s @ble_gap_event: 连接参数更新事件 - 连接句柄: %d, 状态: %d", GetTimeString().c_str(), event->conn_update.conn_handle, event->conn_update.status);
         return 0;
 
     case BLE_GAP_EVENT_SUBSCRIBE:
+        if (!g_ble_config_instance) {
+            ESP_LOGE(TAG, "%s @ble_gap_event: SUBSCRIBE事件处理失败：全局实例不存在", GetTimeString().c_str());
+            assert(g_ble_config_instance != nullptr);
+            return 0;
+        }
         ESP_LOGI(TAG, "%s @ble_gap_event: BLE订阅事件 - 连接句柄: %d, 属性句柄: %d, 订阅状态: %d", 
                 GetTimeString().c_str(), event->subscribe.conn_handle, event->subscribe.attr_handle, 
                 event->subscribe.cur_notify);
