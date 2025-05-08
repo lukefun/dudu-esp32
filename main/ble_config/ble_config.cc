@@ -332,24 +332,18 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             if(strcmp(char_name, "control") == 0 && data_len != CONTROL_CMD_LEN) {
                 ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 控制命令长度无效: %d, 应为1字节", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-            }else if(strcmp(char_name, "control") == 0) {
-                ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据 - 控制命令: 0x%02x", GetTimeString().c_str(), data_len, *(uint8_t*)OS_MBUF_PKTPTR(ctxt->om));
             }
 
             // 【SSID】最大32字节
             if(strcmp(char_name, "ssid") == 0 && data_len > MAX_SSID_LEN) {
                 ESP_LOGE(TAG, "%s @gatt_svr_chr_access: SSID长度过长: %d/32", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN; 
-            }else if(strcmp(char_name, "ssid") == 0) {
-                ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据 - SSID: %s", GetTimeString().c_str(), data_len, (char*)OS_MBUF_PKTPTR(ctxt->om));
             }
 
             // 【密码】最大64字节
             if(strcmp(char_name, "password") == 0 && data_len > MAX_PASSWORD_LEN) {
                 ESP_LOGE(TAG, "%s @gatt_svr_chr_access: 密码长度过长: %d/64", GetTimeString().c_str(), data_len);
                 return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-            }else if(strcmp(char_name, "password") == 0) {
-                ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 接收到 %d 字节数据 - WiFi密码: %s", GetTimeString().c_str(), data_len, (char*)OS_MBUF_PKTPTR(ctxt->om));
             }
 
             // ==== 新增数据校验结束 ====
@@ -604,58 +598,25 @@ void BleConfig::ble_on_reset(int reason) {
 
 // BLE主机任务，负责管理BLE主机的生命周期，包括初始化、同步、广播等
 void BleConfig::ble_host_task(void *param) {
-    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务已启动", GetTimeString().c_str());
-
-    // 1. 初始化阶段
-    ble_host_task_handle = xTaskGetCurrentTaskHandle(); // 保存任务句柄，用于后续操作，如停止广播
-    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));            // 添加到看门狗，防止任务卡死
-    ble_host_task_state = BLE_TASK_RUNNING;             // 设置任务状态为运行中，用于后续判断
-
-    // 2. 主循环
-    while (ble_host_task_running) {
-        // 检查是否收到停止信号
-        if (ble_host_task_state == BLE_TASK_STOPPING) {
-            ESP_LOGI(TAG, "%s @ble_host_task: 收到任务停止信号，准备退出...", GetTimeString().c_str());
-            break;
-        }
-        
-        // 获取事件队列
-        struct ble_npl_eventq *eventq = nimble_port_get_dflt_eventq();        // 接收BLE事件
-        if (eventq == NULL) {
-            ESP_LOGW(TAG, "%s @ble_host_task: eventq为空，跳过本轮处理", GetTimeString().c_str());
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-        // 处理事件队列，如果有事件则处理，没有事件则等待
-        struct ble_npl_event *ev = ble_npl_eventq_get(eventq, pdMS_TO_TICKS(100));
-        if (ev) {
-            assert(ev != NULL);
-            ESP_LOGD(TAG, "%s @ble_host_task: 处理事件", GetTimeString().c_str());
-            ble_npl_event_run(ev);  // 处理事件，如更新连接状态等
-            // 事件处理完成后释放内存
-            ble_npl_eventq_remove(eventq, ev);
-        }
-        esp_task_wdt_reset();           // 喂狗，防止任务卡死
-        vTaskDelay(pdMS_TO_TICKS(10));  // 短暂延时，避免过快占用CPU资源
+    BleConfig::ble_host_task_state = BLE_TASK_RUNNING;
+    BleConfig::ble_host_task_running = true;
+    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动", GetTimeString().c_str());
+    
+    // BLE主循环
+    while (BleConfig::ble_host_task_running) {
+        nimble_port_run(); // NimBLE事件循环（阻塞，内部会处理BLE事件）
+        // 可选：在此处添加短暂延时或yield，避免死循环占用CPU
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
-
-    // 3. 清理阶段
-    ESP_LOGI(TAG, "%s @ble_host_task: 开始执行BLE任务清理工作", GetTimeString().c_str());
-
-    // 停止广播, 确保广播已停止
-    if (ble_gap_adv_active()) { // 检查是否有广播在运行
-        ble_gap_adv_stop();     // 停止广播
-    }
+    ESP_LOGI(TAG, "%s @ble_host_task: 收到退出信号，开始资源清理", GetTimeString().c_str());
     
-    // 从看门狗中移除任务
-    esp_task_wdt_delete(NULL);
+    // 主动释放NimBLE资源
+    nimble_port_deinit();
+    ESP_LOGI(TAG, "%s @ble_host_task: NimBLE资源释放完成", GetTimeString().c_str());
     
-    // 更新最终状态
-    ble_host_task_state = BLE_TASK_STOPPED;
-    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务已完全退出", GetTimeString().c_str());
-    
-    // 任务结束，删除任务，释放内存，并返回
-    vTaskDelete(NULL);
+    BleConfig::ble_host_task_state = BLE_TASK_STOPPED;     // 设置任务状态为已停止
+    ESP_LOGI(TAG, "%s @ble_host_task: 任务状态已设置为STOPPED，准备自杀退出", GetTimeString().c_str());
+    vTaskDelete(NULL); // 任务自杀，安全退出
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {

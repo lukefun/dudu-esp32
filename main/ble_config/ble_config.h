@@ -180,8 +180,10 @@ private:
 
     // 任务状态管理
     static TaskHandle_t ble_host_task_handle;    // 用于存储任务句柄，
-    static volatile bool ble_host_task_running;  // 用于指示任务是否正在运行
-    static volatile ble_task_state_t ble_host_task_state;   // 用于存储任务状态
+    public:
+        // BLE主机任务运行标志和状态（需为public以便任务函数访问）
+        static volatile bool ble_host_task_running;  // 用于指示任务是否正在运行
+        static volatile ble_task_state_t ble_host_task_state;   // 用于存储任务状态
 
 };
 

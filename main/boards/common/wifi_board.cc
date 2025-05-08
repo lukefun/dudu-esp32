@@ -430,12 +430,28 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
         esp_task_wdt_reset();
         ESP_LOGI(TAG, "%s @ConnectWifiByBle：释放资源后内存状态 - 当前可用: %u 字节", GetTimeString().c_str(), free_sram);
     }
+    // <<<<<<<<<<<<<<<<<<<<<< BLE彻底去初始化 >>>>>>>>>>>>>>>>>>>>>>
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：强制去初始化 BLE 模块，确保WiFi连接前内存充足", GetTimeString().c_str());
+    BleConfig::GetInstance().Deinitialize();
+    vTaskDelay(pdMS_TO_TICKS(100)); // 等待BLE资源彻底释放
     
-    // 重置任务看门狗，防止WiFi初始化过程中触发看门狗超时
-    esp_task_wdt_reset();
-    ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（1），防止WiFi初始化过程中触发看门狗超时", GetTimeString().c_str());
+
+
     
-    // 启动WiFi
+    // 启动WiFi 连接之前，必须检查BLE是否已停止，并且释放了内存，否则会导致WiFi连接失败
+
+
+
+
+
+    // if (BleConfig::GetInstance().IsAdvertising()) {
+    //     ESP_LOGE(TAG, "%s @ConnectWifiByBle：WiFi连接失败，原因：BLE未停止或未释放内存", GetTimeString().c_str());
+    //     BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECT_FAILED);
+    //     return;
+    // }
+
+
+
     wifi_station.Start();   // 启动WiFi，内存密集型操作
     esp_task_wdt_reset();   // 重置看门狗
     vTaskDelay(pdMS_TO_TICKS(500)); // 短暂延时，让WiFi任务有时间初始化
@@ -457,50 +473,37 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(500));
         esp_task_wdt_reset();
-
         // 删除超时任务
         if (wifi_timeout_task_handle_ != nullptr) {
             ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功，删除配网超时任务", GetTimeString().c_str());
             vTaskDelete(wifi_timeout_task_handle_);
             wifi_timeout_task_handle_ = nullptr;
         }
-        // 去初始化BLE模块
-        ESP_LOGI(TAG, "%s @ConnectWifiByBle：去初始化 BLE 模块", GetTimeString().c_str());
-        BleConfig::GetInstance().Deinitialize();
+        // BLE模块已在连接前去初始化，无需再次Deinitialize
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE模块已去初始化", GetTimeString().c_str());
         // 设置设备状态为空闲
         ESP_LOGI(TAG, "%s @ConnectWifiByBle：设置设备状态为空闲", GetTimeString().c_str());
         Application::GetInstance().SetDeviceState(kDeviceStateIdle); // 使用正确的状态枚举
-        // 不再重启设备，配网成功后应进入正常工作流程
         ESP_LOGI(TAG, "%s @ConnectWifiByBle：配网成功完成，进入正常工作状态", GetTimeString().c_str());
     } else {
         ESP_LOGW(TAG, "%s @ConnectWifiByBle：WiFi连接失败，重新进入配网状态！", GetTimeString().c_str());
         // 停止WiFi连接
         esp_task_wdt_reset();
         wifi_station.Stop();
-        
-        // 发送连接失败状态
         wifi_config_status_t status = WIFI_STATUS_FAIL_CONN;
         if (!wifi_station.IsConnected()) {
-            // 如果连接失败，默认使用一般连接失败状态
             status = WIFI_STATUS_FAIL_CONN;
         }
-        
-        // 确保BLE模块处于可用状态
-        ESP_LOGI(TAG, "%s @ConnectWifiByBle：检查 BLE 是否正在广播", GetTimeString().c_str());
-        if (!BleConfig::GetInstance().IsAdvertising()) {
-            ESP_LOGI(TAG, "%s @ConnectWifiByBle：重新启动BLE广播", GetTimeString().c_str());
-            BleConfig::GetInstance().StartAdvertising();
-            // 给BLE一些时间来启动
-            vTaskDelay(pdMS_TO_TICKS(300));
-        }
-        
-        // 发送失败状态并等待足够长的时间确保发送成功
+        // 重新初始化BLE并恢复广播
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接失败，重新初始化BLE并恢复广播", GetTimeString().c_str());
+        BleConfig::GetInstance().Initialize();
+        vTaskDelay(pdMS_TO_TICKS(200));
+        BleConfig::GetInstance().StartAdvertising();
+        vTaskDelay(pdMS_TO_TICKS(300));
         ESP_LOGW(TAG, "%s @ConnectWifiByBle：发送WiFi连接失败状态: %d", GetTimeString().c_str(), status);
         BleConfig::GetInstance().SendWifiStatus(status);
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(500));
-        
-        // 显示连接失败提示
         auto display = Board::GetInstance().GetDisplay();
         if (display) {
             std::string error_msg;
@@ -517,7 +520,6 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
             }
             display->ShowNotification(error_msg.c_str(), 3000);
         }
-        // 恢复设备状态为配网中，允许用户在超时前重试
         ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接失败，恢复设备状态为配网中", GetTimeString().c_str());
         Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);
     }
