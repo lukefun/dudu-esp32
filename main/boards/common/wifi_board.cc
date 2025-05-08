@@ -432,7 +432,8 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
     }
     // <<<<<<<<<<<<<<<<<<<<<< BLE彻底去初始化 >>>>>>>>>>>>>>>>>>>>>>
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：强制去初始化 BLE 模块，确保WiFi连接前内存充足", GetTimeString().c_str());
-    BleConfig::GetInstance().Deinitialize();
+    BleConfig::GetInstance().Deinitialize();    // 强制去初始化 BLE 模块
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE彻底去初始化完成", GetTimeString().c_str());
     vTaskDelay(pdMS_TO_TICKS(100)); // 等待BLE资源彻底释放
     
 
@@ -442,7 +443,62 @@ void WifiBoard::ConnectWifiByBle(const std::string& ssid, const std::string& pas
 
 
 
-
+    // ====== 新增BLE彻底释放与多次检测机制 ======
+    int ble_release_retry = 0;
+    const int ble_release_max_retry = 5;
+    bool ble_fully_released = false;
+    int ble_force_deinit_count = 0;
+    int ble_restart_count = 0;
+    int last_free_sram = 0;
+    for (; ble_release_retry < ble_release_max_retry; ++ble_release_retry) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_task_wdt_reset();
+        // 检查BLE是否已停止（可根据实际BLE实现调整）
+        bool adv = BleConfig::GetInstance().IsAdvertising();
+        bool running = BleConfig::GetInstance().IsRunning();
+        int free_sram_check = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE状态：Advertising=%d, Running=%d, 当前可用内存: %d 字节，重试次数: %d", GetTimeString().c_str(), adv, running, free_sram_check, ble_release_retry);
+        if (!adv && !running) {
+            if (free_sram_check > 60000) {
+                ble_fully_released = true;
+                break;
+            }
+        } else {
+            ESP_LOGW(TAG, "%s @ConnectWifiByBle：BLE未完全停止，重试中...（%d/%d）", GetTimeString().c_str(), ble_release_retry+1, ble_release_max_retry);
+            // 每2次强制Deinitialize一次
+            if ((ble_release_retry+1) % 2 == 0) {
+                ESP_LOGW(TAG, "%s @ConnectWifiByBle：尝试强制Deinitialize BLE（第%d次）", GetTimeString().c_str(), ++ble_force_deinit_count);
+                BleConfig::GetInstance().Deinitialize();
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        }
+        // 主动触发堆完整性检查和垃圾回收
+        heap_caps_check_integrity_all(true);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        // 记录内存变化
+        if (last_free_sram != 0 && free_sram_check < last_free_sram - 4096) {
+            ESP_LOGW(TAG, "%s @ConnectWifiByBle：检测到内存异常下降，上次: %d, 本次: %d", GetTimeString().c_str(), last_free_sram, free_sram_check);
+        }
+        last_free_sram = free_sram_check;
+    }
+    if (!ble_fully_released) {
+        ESP_LOGE(TAG, "%s @ConnectWifiByBle：BLE资源释放超时，WiFi连接可能失败，建议优化BLE释放流程！", GetTimeString().c_str());
+        // 尝试重启BLE子系统作为最后防线
+        if (ble_restart_count < 1) {
+            ESP_LOGE(TAG, "%s @ConnectWifiByBle：尝试重启BLE子系统（第%d次）", GetTimeString().c_str(), ++ble_restart_count);
+            BleConfig::GetInstance().Deinitialize();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            BleConfig::GetInstance().Initialize();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            BleConfig::GetInstance().Deinitialize();
+            vTaskDelay(pdMS_TO_TICKS(200));
+            int free_sram_check = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            ESP_LOGI(TAG, "%s @ConnectWifiByBle：重启BLE后内存: %d 字节", GetTimeString().c_str(), free_sram_check);
+        }
+    } else {
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE资源已彻底释放，准备启动WiFi。", GetTimeString().c_str());
+    }
+    // ====== 结束BLE彻底释放与多次检测机制 ======
 
     // if (BleConfig::GetInstance().IsAdvertising()) {
     //     ESP_LOGE(TAG, "%s @ConnectWifiByBle：WiFi连接失败，原因：BLE未停止或未释放内存", GetTimeString().c_str());
