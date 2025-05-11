@@ -15,3 +15,5 @@ main/assets/lang_config.h
 sdkconfig
 sdkconfig.old
 __pycache__/
+allinone.txt
+.cursor/rules/superman.mdc
