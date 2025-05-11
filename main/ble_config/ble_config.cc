@@ -25,14 +25,15 @@ volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;
 
 // 获取当前时间字符串，包含毫秒
 static std::string GetTimeString() {
+    // 使用系统时间（RTC）获取当前时间
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    struct tm* tm_info = localtime(&tv.tv_sec);
     char buffer[64];
-    strftime(buffer, sizeof(buffer), "[%H:%M:%S.", tm_info);
-    // 添加毫秒部分（确保有足够空间：最多3位数字+']'+\0 = 5字节）
-    size_t len = strlen(buffer);
-    snprintf(buffer + len, sizeof(buffer) - len, "%03ld]", tv.tv_usec / 1000);
+    strftime(buffer, sizeof(buffer), "[%H:%M:%S", tm_info);
+    int len = strlen(buffer);
+    snprintf(buffer + len, sizeof(buffer) - len, ".%03ld]", tv.tv_usec / 1000);
     return std::string(buffer);
 }
 
@@ -620,6 +621,8 @@ void BleConfig::ble_host_task(void *param) {
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
+    esp_task_wdt_reset();
+
     ESP_LOGI(TAG, "%s @SendWifiStatus: 尝试发送WiFi状态: %d", GetTimeString().c_str(), status);
     
     // 喂任务看门狗，防止长时间操作导致看门狗超时
@@ -635,6 +638,7 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     // 分配内存前先检查可用堆内存
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     ESP_LOGI(TAG, "%s @SendWifiStatus: 分配内存前先检查可用堆内存，当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    esp_task_wdt_reset();
     
     // 分配内存
     struct os_mbuf *om = ble_hs_mbuf_from_flat(&status, sizeof(status));
