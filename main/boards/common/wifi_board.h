@@ -37,7 +37,7 @@ protected:
     // 新增：配网超时任务句柄
     TaskHandle_t wifi_timeout_task_handle_ = nullptr;
     // 新增：配网超时时间（分钟）
-    int config_timeout_minutes_ = 5; // 默认5分钟
+    int config_timeout_minutes_ = 3; // 默认3分钟
 
 private:
     // 新增：重构 EnterWifiConfigMode 的辅助函数
