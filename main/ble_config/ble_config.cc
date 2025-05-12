@@ -599,19 +599,42 @@ void BleConfig::ble_on_reset(int reason) {
 
 // BLE主机任务，负责管理BLE主机的生命周期，包括初始化、同步、广播等
 void BleConfig::ble_host_task(void *param) {
+
+    esp_task_wdt_add(NULL);  // 启动看门狗监控任务
+    
     BleConfig::ble_host_task_state = BLE_TASK_RUNNING;
     BleConfig::ble_host_task_running = true;
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动", GetTimeString().c_str());
     
     // BLE主循环
     while (BleConfig::ble_host_task_running) {
-        nimble_port_run(); // NimBLE事件循环（阻塞，内部会处理BLE事件）
+        esp_task_wdt_reset();  // 在每次循环开始时喂狗，确保任务看门狗被重置
+
+        nimble_port_run(); // NimBLE事件循环（这是一个会阻塞并处理事件的函数）
+                           // 它内部应该有让出CPU的机制，或者其事件处理不应耗时过长
+                           // 如果nimble_port_run()本身卡死，此处的喂狗也无法执行
+
         // 可选：在此处添加短暂延时或yield，避免死循环占用CPU
+
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    ESP_LOGI(TAG, "%s @ble_host_task: 收到退出信号，开始资源清理", GetTimeString().c_str());
-    
+
+    // 在任务删除自身之前，取消看门狗监控
+    esp_err_t wdt_del_rc = esp_task_wdt_delete(NULL);
+    if (wdt_del_rc == ESP_OK) {
+        ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务已从看门狗监控中移除。", GetTimeString().c_str());
+    } else {
+        ESP_LOGE(TAG, "%s @ble_host_task: 从看门狗移除BLE主机任务失败，错误码: %s", GetTimeString().c_str(), esp_err_to_name(wdt_del_rc));
+    }
+
     // 主动释放NimBLE资源
+    // 注意：nimble_port_deinit() 应该在 nimble_port_stop() 被调用之后（如果适用）
+    // 并且在所有使用 NimBLE 服务的任务都停止后执行。
+    // 如果其他任务还在使用 NimBLE，这里 deinit 可能会有问题。
+    // 通常，nimble_port_stop() 会使得 nimble_port_run() 退出。
+    // 你需要确保在调用 nimble_port_deinit() 之前，nimble_port_run() 已经停止。
+    // 你的 ble_host_task_running = false; 应该会触发 nimble_port_stop() 或者类似的机制。
+    ESP_LOGI(TAG, "%s @ble_host_task: 收到退出信号，开始资源清理", GetTimeString().c_str());
     nimble_port_deinit();
     ESP_LOGI(TAG, "%s @ble_host_task: NimBLE资源释放完成", GetTimeString().c_str());
     
