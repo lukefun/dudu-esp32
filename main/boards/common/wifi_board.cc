@@ -330,7 +330,7 @@ void WifiBoard::EnterWifiConfigMode()
         // 关键错误，可能需要重启或进入更深层次的错误状态
         return;
     }
-    esp_task_wdt_reset()； // 重置看门狗
+    esp_task_wdt_reset(); // 重置看门狗
 
         // --- 3. 初始化并启动BLE广播 ---
         if (!InitializeAndStartBleAdvertising())
