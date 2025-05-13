@@ -599,23 +599,33 @@ void BleConfig::ble_on_reset(int reason) {
 
 // BLE主机任务，负责管理BLE主机的生命周期，包括初始化、同步、广播等
 void BleConfig::ble_host_task(void *param) {
+    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动【特别关注！】", GetTimeString().c_str());
 
-    esp_task_wdt_add(NULL);  // 启动看门狗监控任务
-    
+    // 启动看门狗监控任务
+    esp_err_t wdt_add_err = esp_task_wdt_add(NULL); 
+    if (wdt_add_err != ESP_OK) {
+        ESP_LOGE(TAG, "%s @ble_host_task: 向看门狗定时器（WDT）添加蓝牙主机任务（ble_host_task）失败: %s", GetTimeString().c_str(), esp_err_to_name(wdt_add_err));
+    } else {
+        ESP_LOGI(TAG, "%s @ble_host_task: ble 主机任务（ble_host_task）已添加到看门狗定时器（WDT）中", GetTimeString().c_str());
+    }
+
     BleConfig::ble_host_task_state = BLE_TASK_RUNNING;
     BleConfig::ble_host_task_running = true;
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动", GetTimeString().c_str());
     
     // BLE主循环
     while (BleConfig::ble_host_task_running) {
+        ESP_LOGD(TAG, "%s @ble_host_task: 进入BLE主循环", GetTimeString().c_str());
+
         esp_task_wdt_reset();  // 在每次循环开始时喂狗，确保任务看门狗被重置
 
         nimble_port_run(); // NimBLE事件循环（这是一个会阻塞并处理事件的函数）
                            // 它内部应该有让出CPU的机制，或者其事件处理不应耗时过长
                            // 如果nimble_port_run()本身卡死，此处的喂狗也无法执行
 
-        // 可选：在此处添加短暂延时或yield，避免死循环占用CPU
+        esp_task_wdt_reset();  // 在处理完事件后再次喂狗
 
+        // 在此处添加适当的延时，避免CPU占用过高
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
@@ -644,6 +654,7 @@ void BleConfig::ble_host_task(void *param) {
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
+    
     esp_task_wdt_reset();
 
     ESP_LOGI(TAG, "%s @SendWifiStatus: 尝试发送WiFi状态: %d", GetTimeString().c_str(), status);
