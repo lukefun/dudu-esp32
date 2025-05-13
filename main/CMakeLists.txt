@@ -17,30 +17,29 @@ set(SOURCES "audio_codecs/audio_codec.cc"
             "ota.cc"
             "settings.cc"
             "background_task.cc"
-            "ble_config/ble_config.cc"  # <--- BLE 配网
-            # "ble_config/ble_hs_mbuf_to_flat.c"   # <-- 新增
+            "ble_config/ble_config.cc"
             "main.cc"
             )
 
-string(REGEX REPLACE "\\\\" "/" NIMBLE_BASE "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble")
-string(REGEX REPLACE "\\\\" "/" NIMBLE_PORT "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/porting/nimble/include")
-string(REGEX REPLACE "\\\\" "/" NIMBLE_PORT_FREERTOS "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/porting/npl/freertos/include")
-string(REGEX REPLACE "\\\\" "/" NIMBLE_PORT_ROOT "$ENV{IDF_PATH}/components/bt/host/nimble/port/include")
-string(REGEX REPLACE "\\\\" "/" NIMBLE_TRANSPORT "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble/transport/include")
+# 修正 NimBLE 相关路径的定义，确保它们指向正确的目录层级
+string(REGEX REPLACE "\\\\" "/" NIMBLE_ROOT_FOR_HOST "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble/host") # 指向 .../nimble/host
+string(REGEX REPLACE "\\\\" "/" NIMBLE_ROOT_FOR_NIMBLE "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/nimble") # 指向 .../nimble/nimble
+string(REGEX REPLACE "\\\\" "/" NIMBLE_PORTING_NIMBLE_INCLUDE "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/porting/nimble/include")
+string(REGEX REPLACE "\\\\" "/" NIMBLE_PORTING_NPL_FREERTOS_INCLUDE "$ENV{IDF_PATH}/components/bt/host/nimble/nimble/porting/npl/freertos/include")
+string(REGEX REPLACE "\\\\" "/" NIMBLE_PORT_INCLUDE "$ENV{IDF_PATH}/components/bt/host/nimble/port/include")
 
-message(STATUS "NIMBLE_TRANSPORT = ${NIMBLE_TRANSPORT}")
 
 # 定义所有可能的 NimBLE 头文件目录
 set(NIMBLE_INCLUDE_CANDIDATES
-    "${NIMBLE_BASE}/include"
-    "${NIMBLE_BASE}/host/include"
-    "${NIMBLE_BASE}/host/util/include"
-    "${NIMBLE_BASE}/host/services/gap/include"
-    "${NIMBLE_BASE}/host/services/gatt/include"
-    "${NIMBLE_PORT}"
-    "${NIMBLE_PORT_FREERTOS}"
-    "${NIMBLE_PORT_ROOT}"
-    "${NIMBLE_TRANSPORT}"   # <--- 新增这一行
+    "${NIMBLE_ROOT_FOR_NIMBLE}/include"                 # for nimble/nimble_npl.h etc.
+    "${NIMBLE_ROOT_FOR_HOST}/include"                   # for host/ble_hs.h, host/ble_hs_mbuf.h etc.
+    "${NIMBLE_ROOT_FOR_HOST}/util/include"              # for util/util.h
+    "${NIMBLE_ROOT_FOR_HOST}/services/gap/include"
+    "${NIMBLE_ROOT_FOR_HOST}/services/gatt/include"
+    "${NIMBLE_PORTING_NIMBLE_INCLUDE}"
+    "${NIMBLE_PORTING_NPL_FREERTOS_INCLUDE}"
+    "${NIMBLE_PORT_INCLUDE}"
+    "${NIMBLE_ROOT_FOR_NIMBLE}/transport/include"       # for transport/ble_hci_common.h if needed by other parts
 )
 
 # 先设置基础 include 路径
@@ -57,11 +56,14 @@ set(INCLUDE_DIRS
 foreach(DIR ${NIMBLE_INCLUDE_CANDIDATES})
     if(EXISTS ${DIR})
         list(APPEND INCLUDE_DIRS ${DIR})
+        message(STATUS "NIMBLE Include Dir Added: ${DIR}") # 增加日志确认
+    else()
+        message(WARNING "NIMBLE Include Dir NOT FOUND: ${DIR}") # 增加警告
     endif()
 endforeach()
 
 # 在这里添加调试信息
-message(STATUS "最终包含目录:")
+message(STATUS "最终包含目录 (main/CMakeLists.txt):")
 foreach(DIR ${INCLUDE_DIRS})
     message(STATUS "  - ${DIR}")
 endforeach()
