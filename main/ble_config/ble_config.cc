@@ -599,26 +599,23 @@ void BleConfig::ble_on_reset(int reason) {
 
 // BLE主机任务，负责管理BLE主机的生命周期，包括初始化、同步、广播等
 void BleConfig::ble_host_task(void *param) {
+
+    esp_task_wdt_add(NULL);  // 启动看门狗监控任务
+    
     BleConfig::ble_host_task_state = BLE_TASK_RUNNING;
     BleConfig::ble_host_task_running = true;
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动", GetTimeString().c_str());
-
-    // 添加看门狗订阅
-    esp_err_t wdt_add_err = esp_task_wdt_add(NULL);
-    if (wdt_add_err != ESP_OK) {
-        ESP_LOGE(TAG, "%s @ble_host_task: Failed to add ble_host_task to WDT: %s", GetTimeString().c_str(), esp_err_to_name(wdt_add_err));
-    } else {
-        ESP_LOGI(TAG, "%s @ble_host_task: ble_host_task added to WDT.", GetTimeString().c_str());
-    }
     
     // BLE主循环
     while (BleConfig::ble_host_task_running) {
-        nimble_port_run();
-        
-        // 喂狗操作 - 确保主循环定期执行
-        esp_task_wdt_reset();
-        
-        // 给予其他任务执行机会
+        esp_task_wdt_reset();  // 在每次循环开始时喂狗，确保任务看门狗被重置
+
+        nimble_port_run(); // NimBLE事件循环（这是一个会阻塞并处理事件的函数）
+                           // 它内部应该有让出CPU的机制，或者其事件处理不应耗时过长
+                           // 如果nimble_port_run()本身卡死，此处的喂狗也无法执行
+
+        // 可选：在此处添加短暂延时或yield，避免死循环占用CPU
+
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
@@ -647,7 +644,12 @@ void BleConfig::ble_host_task(void *param) {
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
+    esp_task_wdt_reset();
+
     ESP_LOGI(TAG, "%s @SendWifiStatus: 尝试发送WiFi状态: %d", GetTimeString().c_str(), status);
+    
+    // 喂任务看门狗，防止长时间操作导致看门狗超时
+    esp_task_wdt_reset();
     
     // 检查是否有连接
     if (conn_handle_ == BLE_HS_CONN_HANDLE_NONE || status_val_handle_ == 0) {
@@ -659,6 +661,7 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     // 分配内存前先检查可用堆内存
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     ESP_LOGI(TAG, "%s @SendWifiStatus: 分配内存前先检查可用堆内存，当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
+    esp_task_wdt_reset();
     
     // 分配内存
     struct os_mbuf *om = ble_hs_mbuf_from_flat(&status, sizeof(status));
@@ -667,9 +670,15 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
         return;
     }
 
-    // 重试发送通知
+    // === 修正重试机制：只在循环内发送，不再多发一次 ===
+    // 增加短暂延时，确保BLE栈有足够时间处理
     int rc = -1;
+
+    // 重试发送通知
     for(int retry = 0; retry < NOTIFY_RETRY_COUNT; retry++) {
+        // 每次发送前喂狗
+        esp_task_wdt_reset();
+        
         // 发送通知，如果成功则退出循环，否则继续重试
         rc = ble_gatts_notify_custom(conn_handle_, status_val_handle_, om);
         if(rc == 0) {
@@ -679,6 +688,8 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
         ESP_LOGW(TAG, "%s @SendWifiStatus: 通知发送失败 (尝试 %d/%d)，错误码: %d，稍后重试...", 
                 GetTimeString().c_str(), retry+1, NOTIFY_RETRY_COUNT, rc);
         
+        // 延时前再次喂狗
+        esp_task_wdt_reset();
         // 延时后再次尝试发送通知
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_RETRY_DELAY_MS));
     }
@@ -687,6 +698,9 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     }
 
     os_mbuf_free_chain(om);  // 确保释放mbuf
+    
+    // 操作完成后再次喂狗
+    esp_task_wdt_reset();
 }
 
 void BleConfig::SetCredentialsReceivedCallback(std::function<void(const std::string&, const std::string&)> cb) {
