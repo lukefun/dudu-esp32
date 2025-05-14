@@ -51,6 +51,7 @@
 
         "VOLUME": "Volume ",
         "MUTED": "Muted",
-        "MAX_VOLUME": "Max volume"
+        "MAX_VOLUME": "Max volume",
+        "NETWORK_NOT_READY": "Network not ready, please check network settings"
     }
 }

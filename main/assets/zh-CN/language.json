@@ -50,6 +50,7 @@
 
         "VOLUME":"音量 ",
         "MUTED":"已静音",
-        "MAX_VOLUME":"最大音量"
+        "MAX_VOLUME":"最大音量",
+        "NETWORK_NOT_READY": "网络未就绪，请检查网络设置"
     }
 }
