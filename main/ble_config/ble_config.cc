@@ -601,14 +601,6 @@ void BleConfig::ble_on_reset(int reason) {
 void BleConfig::ble_host_task(void *param) {
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动【特别关注！】", GetTimeString().c_str());
 
-    // 启动看门狗监控任务
-    esp_err_t wdt_add_err = esp_task_wdt_add(NULL); 
-    if (wdt_add_err != ESP_OK) {
-        ESP_LOGE(TAG, "%s @ble_host_task: 向看门狗定时器（WDT）添加蓝牙主机任务（ble_host_task）失败: %s", GetTimeString().c_str(), esp_err_to_name(wdt_add_err));
-    } else {
-        ESP_LOGI(TAG, "%s @ble_host_task: ble 主机任务（ble_host_task）已添加到看门狗定时器（WDT）中", GetTimeString().c_str());
-    }
-
     BleConfig::ble_host_task_state = BLE_TASK_RUNNING;
     BleConfig::ble_host_task_running = true;
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动", GetTimeString().c_str());
@@ -617,35 +609,17 @@ void BleConfig::ble_host_task(void *param) {
     while (BleConfig::ble_host_task_running) {
         ESP_LOGD(TAG, "%s @ble_host_task: 进入BLE主循环", GetTimeString().c_str());
 
-        esp_task_wdt_reset();  // 在每次循环开始时喂狗，确保任务看门狗被重置
-
         nimble_port_run(); // NimBLE事件循环（这是一个会阻塞并处理事件的函数）
                            // 它内部应该有让出CPU的机制，或者其事件处理不应耗时过长
                            // 如果nimble_port_run()本身卡死，此处的喂狗也无法执行
-
-        esp_task_wdt_reset();  // 在处理完事件后再次喂狗
 
         // 在此处添加适当的延时，避免CPU占用过高
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // 在任务删除自身之前，取消看门狗监控
-    esp_err_t wdt_del_rc = esp_task_wdt_delete(NULL);
-    if (wdt_del_rc == ESP_OK) {
-        ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务已从看门狗监控中移除。", GetTimeString().c_str());
-    } else {
-        ESP_LOGE(TAG, "%s @ble_host_task: 从看门狗移除BLE主机任务失败，错误码: %s", GetTimeString().c_str(), esp_err_to_name(wdt_del_rc));
-    }
-
     // 主动释放NimBLE资源
-    // 注意：nimble_port_deinit() 应该在 nimble_port_stop() 被调用之后（如果适用）
-    // 并且在所有使用 NimBLE 服务的任务都停止后执行。
-    // 如果其他任务还在使用 NimBLE，这里 deinit 可能会有问题。
-    // 通常，nimble_port_stop() 会使得 nimble_port_run() 退出。
-    // 你需要确保在调用 nimble_port_deinit() 之前，nimble_port_run() 已经停止。
-    // 你的 ble_host_task_running = false; 应该会触发 nimble_port_stop() 或者类似的机制。
     ESP_LOGI(TAG, "%s @ble_host_task: 收到退出信号，开始资源清理", GetTimeString().c_str());
-    nimble_port_deinit();
+    nimble_port_deinit();    // 释放NimBLE资源
     ESP_LOGI(TAG, "%s @ble_host_task: NimBLE资源释放完成", GetTimeString().c_str());
     
     BleConfig::ble_host_task_state = BLE_TASK_STOPPED;     // 设置任务状态为已停止
@@ -654,13 +628,8 @@ void BleConfig::ble_host_task(void *param) {
 }
 
 void BleConfig::SendWifiStatus(wifi_config_status_t status) {
-    
-    esp_task_wdt_reset();
 
     ESP_LOGI(TAG, "%s @SendWifiStatus: 尝试发送WiFi状态: %d", GetTimeString().c_str(), status);
-    
-    // 喂任务看门狗，防止长时间操作导致看门狗超时
-    esp_task_wdt_reset();
     
     // 检查是否有连接
     if (conn_handle_ == BLE_HS_CONN_HANDLE_NONE || status_val_handle_ == 0) {
@@ -687,8 +656,6 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
 
     // 重试发送通知
     for(int retry = 0; retry < NOTIFY_RETRY_COUNT; retry++) {
-        // 每次发送前喂狗
-        esp_task_wdt_reset();
         
         // 发送通知，如果成功则退出循环，否则继续重试
         rc = ble_gatts_notify_custom(conn_handle_, status_val_handle_, om);
@@ -696,11 +663,10 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
             ESP_LOGI(TAG, "%s @SendWifiStatus: WiFi状态通知发送成功: %d", GetTimeString().c_str(), status);
             break;
         }
+
         ESP_LOGW(TAG, "%s @SendWifiStatus: 通知发送失败 (尝试 %d/%d)，错误码: %d，稍后重试...", 
                 GetTimeString().c_str(), retry+1, NOTIFY_RETRY_COUNT, rc);
-        
-        // 延时前再次喂狗
-        esp_task_wdt_reset();
+
         // 延时后再次尝试发送通知
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_RETRY_DELAY_MS));
     }
@@ -709,9 +675,6 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     }
 
     os_mbuf_free_chain(om);  // 确保释放mbuf
-    
-    // 操作完成后再次喂狗
-    esp_task_wdt_reset();
 }
 
 void BleConfig::SetCredentialsReceivedCallback(std::function<void(const std::string&, const std::string&)> cb) {
