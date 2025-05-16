@@ -16,8 +16,6 @@ enum ble_wifi_reason_t { // 改名为 ble_wifi_reason_t
 class WifiBoard : public Board {
 protected:
     bool wifi_config_mode_ = false;
-
-    WifiBoard();
     void EnterWifiConfigMode();
     virtual std::string GetBoardJson() override;
 
@@ -47,6 +45,7 @@ private:
     bool StartWifiConfigTimeoutTask();          // 启动配网超时任务
 
 public:
+    WifiBoard();
     virtual std::string GetBoardType() override;    // 新增：返回板卡类型
     virtual void StartNetwork() override;           // 新增：开始网络
     virtual Http* CreateHttp() override;            // 新增：创建HTTP对象
