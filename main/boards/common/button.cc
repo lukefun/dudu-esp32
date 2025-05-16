@@ -2,22 +2,20 @@
 
 #include <esp_log.h>
 
-static const char* TAG = "Button";
+#define TAG "Button"
+
 #if CONFIG_SOC_ADC_SUPPORTED
-Button::Button(const button_adc_config_t& adc_cfg) {
-    button_config_t button_config = {
-        .type = BUTTON_TYPE_ADC,
-        .long_press_time = 1000,
-        .short_press_time = 50,
-        .adc_button_config = adc_cfg
+AdcButton::AdcButton(const button_adc_config_t& adc_config) : Button(nullptr) {
+    button_config_t btn_config = {
+        .long_press_time = 2000,
+        .short_press_time = 0,
     };
-    button_handle_ = iot_button_create(&button_config);
-    if (button_handle_ == NULL) {
-        ESP_LOGE(TAG, "Failed to create button handle");
-        return;
-    }
+    ESP_ERROR_CHECK(iot_button_new_adc_device(&btn_config, &adc_config, &button_handle_));
 }
 #endif
+
+Button::Button(button_handle_t button_handle) : button_handle_(button_handle) {
+}
 
 Button::Button(gpio_num_t gpio_num, bool active_high) : gpio_num_(gpio_num) {
     if (gpio_num == GPIO_NUM_NC) {
