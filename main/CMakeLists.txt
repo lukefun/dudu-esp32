@@ -18,6 +18,7 @@ set(SOURCES "audio_codecs/audio_codec.cc"
             "settings.cc"
             "background_task.cc"
             "ble_config/ble_config.cc"
+            "ble_config/ble_task_state.cc"
             "main.cc"
             )
 
