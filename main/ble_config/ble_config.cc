@@ -23,59 +23,8 @@ TaskHandle_t BleConfig::ble_host_task_handle = nullptr;
 volatile bool BleConfig::ble_host_task_running = true;
 volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;
 
-// 获取当前时间字符串，包含毫秒
-static std::string GetTimeString() {
-    // 使用系统时间（RTC）获取当前时间
-    time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    char buffer[64];
-    strftime(buffer, sizeof(buffer), "[%H:%M:%S", tm_info);
-    int len = strlen(buffer);
-    snprintf(buffer + len, sizeof(buffer) - len, ".%03ld]", tv.tv_usec / 1000);
-    return std::string(buffer);
-}
 
 
-// 在文件开头添加内存快照结构体和相关函数
-/*
-1. internal_ram (MALLOC_CAP_INTERNAL)
-定义：内部随机存取存储器（RAM）的可用容量。
-作用：监控ESP32芯片内置RAM的可用空间，内部RAM通常速度更快，用于关键性能操作，对于某些需要高速访问的数据结构和算法至关重要。
-应用场景：实时处理任务、中断处理程序、需要低延迟的操作。
-
-2. total_heap (MALLOC_CAP_8BIT)
-定义：系统中可用的总堆内存空间。
-作用：表示整个系统可分配的8位字节对齐内存，包括内部RAM和外部RAM(如果有PSRAM)，是最常用的内存指标，反映系统整体内存健康状况。
-应用场景：一般内存分配监控、应用程序主要工作内存、判断系统是否有足够资源运行特定功能。
-
-3. min_heap (esp_get_minimum_free_heap_size)
-定义：自系统启动以来观察到的最小剩余堆内存量。
-作用：反映系统运行过程中遇到的最严重内存压力，帮助识别内存泄漏和峰值内存使用情况，作为系统稳定性的关键指标。
-应用场景：内存泄漏检测、系统稳定性评估、长期运行系统的健康监控。
-*/
-struct MemorySnapshot {
-    size_t internal_ram;  // MALLOC_CAP_INTERNAL                内部随机存取存储器（RAM）的容量
-    size_t total_heap;    // MALLOC_CAP_8BIT                    系统中的总堆内存空间
-    size_t min_heap;      // esp_get_minimum_free_heap_size()   最小剩余堆内存
-};
-
-// 获取当前内存状态
-static MemorySnapshot get_memory_snapshot() {
-    return {
-        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-        heap_caps_get_free_size(MALLOC_CAP_8BIT),
-        esp_get_minimum_free_heap_size()
-    };
-}
-
-// 打印内存状态日志
-static void log_memory_state(const char* tag, const char* stage, const MemorySnapshot& snapshot) {
-    ESP_LOGI(tag, "%s @log_memory_state - %s: 内存状态 - 内部RAM: %zu字节, 总堆内存: %zu字节, 最小剩余堆内存: %zu字节", 
-             GetTimeString().c_str(), stage, 
-             snapshot.internal_ram, snapshot.total_heap, snapshot.min_heap);
-}
 
 static BleConfig* g_ble_config_instance = nullptr;
 extern "C" void ble_store_config_init(void);
@@ -447,23 +396,31 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                     GetTimeString().c_str(), data_len, data_len, data, bytes_to_hex(data, data_len));
 
             // 处理接收到的数据
-            if (char_name) {    // 确保char_name不为空
-                if (strcmp(char_name, "ssid") == 0) {
+            if (char_name) 
+            {    // 确保char_name不为空
+                if (strcmp(char_name, "ssid") == 0) 
+                {
                     // 保存SSID 到成员变量，将接收到的 WiFi SSID 数据（data 指针，长度 data_len）赋值给 BleConfig 实例的成员变量 received_ssid_ 。
                     g_ble_config_instance->received_ssid_.assign((char*)data, data_len);
                     ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 保存SSID: %s", GetTimeString().c_str(), g_ble_config_instance->received_ssid_.c_str());
-                } else if (strcmp(char_name, "password") == 0) {
+                } 
+                else if (strcmp(char_name, "password") == 0) 
+                {
                     // 保存密码 到成员变量，将接收到的 WiFi 密码 数据（data 指针，长度 data_len）赋值给 BleConfig 实例的成员变量 received_password_ 。
                     g_ble_config_instance->received_password_.assign((char*)data, data_len);
                     ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 保存密码: %s", GetTimeString().c_str(), g_ble_config_instance->received_password_.c_str());
-                } else if (strcmp(char_name, "control") == 0 && 
-                          data_len == 1 && data[0] == WIFI_CONTROL_CMD_CONNECT) {    // 连接WiFi命令，且数据长度为1字节，且数据为0x01，则连接WiFi，并清空SSID和密码
+                } 
+                else if (strcmp(char_name, "control") == 0 && data_len == 1 && data[0] == WIFI_CONTROL_CMD_CONNECT) 
+                {    // 连接WiFi命令，且数据长度为1字节，且数据为0x01，则连接WiFi，并清空SSID和密码
                     ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 收到连接WiFi命令", GetTimeString().c_str());
-                    if (!g_ble_config_instance->received_ssid_.empty() && 
-                        !g_ble_config_instance->received_password_.empty()) {
+                    
+                    if (!g_ble_config_instance->received_ssid_.empty() && !g_ble_config_instance->received_password_.empty()) 
+                        {
                         // 调用凭据接收回调，并清空SSID和密码
                         ESP_LOGI(TAG, "%s @gatt_svr_chr_access: SSID和密码已接收，准备连接WiFi", GetTimeString().c_str());
-                        if (g_ble_config_instance->credentials_received_cb_) {
+
+                        if (g_ble_config_instance->credentials_received_cb_) 
+                        {
                             ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 调用凭据接收回调", GetTimeString().c_str());
 
                             g_ble_config_instance->credentials_received_cb_(    // 调用凭据接收回调
@@ -471,11 +428,15 @@ int BleConfig::gatt_svr_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                 g_ble_config_instance->received_password_);     // Password
                         }
 
-                        if (g_ble_config_instance->connect_wifi_cb_) {          // 调用WiFi连接回调
+                        if (g_ble_config_instance->connect_wifi_cb_) 
+                        {
+                            // 调用WiFi连接回调
                             ESP_LOGI(TAG, "%s @gatt_svr_chr_access: 调用WiFi连接回调", GetTimeString().c_str());
                             g_ble_config_instance->connect_wifi_cb_();
                         }
-                    } else {
+                    } 
+                    else 
+                    {
                         ESP_LOGW(TAG, "%s @gatt_svr_chr_access: 收到连接命令但SSID或密码为空", GetTimeString().c_str());
                     }
                 }
