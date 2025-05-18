@@ -122,11 +122,15 @@ bool WifiBoard::SetupBleCallbacks()
     // 2. 设置开始连接 WiFi 的回调
     ble_config.SetConnectWifiCallback([this]()
                                       {
+        // 创建WdtGuard对象，构造函数中注册看门狗，析构函数中自动注销
+        WdtGuard wdt_guard; // RAII 风格的看门狗管理类
+
         ESP_LOGI(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：收到连接 WiFi 命令", GetTimeString().c_str());
         int free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         ESP_LOGI(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：连接WiFi前内存: %d 字节", GetTimeString().c_str(), free_heap);
 
         BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTING);
+        esp_task_wdt_reset(); // 重置看门狗
 
         if (ble_ssid_.empty() || ble_password_.empty()) {
             ESP_LOGW(TAG, "@SetupBleCallbacks.ConnectWifiCallback：BLE配网凭据为空，无法连接");
@@ -136,10 +140,15 @@ bool WifiBoard::SetupBleCallbacks()
 
         BleConfig::GetInstance().StopAdvertising();
         ESP_LOGI(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：已停止BLE广播，准备连接WiFi", GetTimeString().c_str());
-        esp_task_wdt_reset();
+
+        esp_task_wdt_reset();    // 重置看门狗
+
         bool wifi_ok = false;
         try {
+            esp_task_wdt_reset();    // 重置看门狗
+            ESP_LOGI(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：调用ConnectWifiByBle()连接WiFi", GetTimeString().c_str());
             ConnectWifiByBle(ble_ssid_, ble_password_);
+            esp_task_wdt_reset();    // 重置看门狗
             wifi_ok = true;
         } catch (const std::exception& e) {
             ESP_LOGE(TAG, "@SetupBleCallbacks.ConnectWifiCallback：ConnectWifiByBle异常: %s", e.what());
@@ -383,6 +392,7 @@ void WifiBoard::EnterWifiConfigMode()
             ESP_LOGI(TAG, "%s @EnterWifiConfigMode：检测到已接收WiFi凭据 - SSID: '%s'", GetTimeString().c_str(), ble_ssid_.c_str());
 
             // 尝试使用接收到的凭据连接Wi-Fi
+            ESP_LOGI(TAG, "%s @EnterWifiConfigMode：尝试使用接收到的凭据，用ConnectWifiByBle()连接Wi-Fi", GetTimeString().c_str());
             ConnectWifiByBle(ble_ssid_, ble_password_);
 
             // 检查 ConnectWifiByBle 后的设备状态，以判断是否连接成功
