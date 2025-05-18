@@ -222,8 +222,11 @@ void WifiBoard::UpdateUiForBleConfig()
     ble_hint += std::string(" ") + kBleDeviceName;
     ESP_LOGI(TAG, "%s @UpdateUiForBleConfig：配网提示: %s", GetTimeString().c_str(), ble_hint.c_str());
 
-    // 合并为一次 Alert，减少 UI 闪烁和音频重叠
-    application.Alert(Lang::Strings::BLE_CONFIG_MODE, ble_hint.c_str(), "", Lang::Sounds::P3_WIFICONFIG);
+
+    ESP_LOGI(TAG, "%s @UpdateUiForBleConfig： ------------------------------------------------------------ ", GetTimeString().c_str()); // 分割线
+    application.Alert(Lang::Strings::BLE_CONFIG_MODE, ble_hint.c_str(), "thinking", Lang::Sounds::P3_WIFICONFIG);                       // 显示提示,播放提示音
+    ESP_LOGI(TAG, "%s @UpdateUiForBleConfig： ------------------------------------------------------------ ", GetTimeString().c_str()); // 分割线
+
     ESP_LOGI(TAG, "%s @UpdateUiForBleConfig：显示 BLE 配网提示 和 播放提示音：\"进入配网模式\"完成", GetTimeString().c_str());
 }
 
