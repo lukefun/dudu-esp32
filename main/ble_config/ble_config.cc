@@ -72,7 +72,7 @@ static MemorySnapshot get_memory_snapshot() {
 
 // 打印内存状态日志
 static void log_memory_state(const char* tag, const char* stage, const MemorySnapshot& snapshot) {
-    ESP_LOGI(tag, "%s @%s: 内存状态 - 内部RAM: %zu字节, 总堆内存: %zu字节, 最小剩余堆内存: %zu字节", 
+    ESP_LOGI(tag, "%s @log_memory_state - %s: 内存状态 - 内部RAM: %zu字节, 总堆内存: %zu字节, 最小剩余堆内存: %zu字节", 
              GetTimeString().c_str(), stage, 
              snapshot.internal_ram, snapshot.total_heap, snapshot.min_heap);
 }
@@ -673,13 +673,6 @@ void BleConfig::ble_on_reset(int reason) {
 
 // BLE主机任务，负责管理BLE主机的生命周期，包括初始化、同步、广播等
 void BleConfig::ble_host_task(void *param) {
-    // 记录任务启动时的内存状态
-    // size_t start_free_internal_mem = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    // size_t start_free_total_mem = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    // size_t start_min_free_heap = esp_get_minimum_free_heap_size();
-    // ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务启动【特别关注！】内部RAM: %zu字节, 总堆内存: %zu字节, 最小剩余堆内存: %zu字节", 
-    //          GetTimeString().c_str(), start_free_internal_mem, start_free_total_mem, start_min_free_heap);
-
     MemorySnapshot start_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "ble_host_task: BLE主机任务启动", start_snapshot);
 
@@ -723,13 +716,6 @@ void BleConfig::ble_host_task(void *param) {
     MemorySnapshot before_deinit = get_memory_snapshot();
     log_memory_state(TAG, "ble_host_task: nimble_port_deinit()前", before_deinit);
 
-    // size_t before_deinit_free_internal_mem = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    // size_t before_deinit_free_total_mem = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    // size_t before_deinit_min_free_heap = esp_get_minimum_free_heap_size();
-    // ESP_LOGI(TAG, "%s @ble_host_task: nimble_port_deinit()前内存状态 - 内部RAM: %zu字节, 总堆内存: %zu字节, 最小剩余堆内存: %zu字节", 
-    //          GetTimeString().c_str(), before_deinit_free_internal_mem, before_deinit_free_total_mem, before_deinit_min_free_heap);
-    
-
     ESP_LOGI(TAG, "%s @ble_host_task: 调用 nimble_port_stop()", GetTimeString().c_str());
     nimble_port_stop(); // 停止NimBLE端口事件处理
     ESP_LOGI(TAG, "%s @ble_host_task: nimble_port_stop() 调用完成", GetTimeString().c_str());
@@ -738,9 +724,6 @@ void BleConfig::ble_host_task(void *param) {
     ESP_LOGI(TAG, "%s @ble_host_task: 调用 ble_hs_deinit()", GetTimeString().c_str());
     ble_hs_deinit();
     ESP_LOGI(TAG, "%s @ble_host_task: ble_hs_deinit() 调用完成", GetTimeString().c_str());
-
-    // nimble_port_deinit() 将由 Deinitialize() 函数统一处理
-    // ESP_LOGI(TAG, "%s @ble_host_task: nimble_port_deinit();    // 释放NimBLE资源", GetTimeString().c_str());
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务正常退出，资源清理将由Deinitialize处理", GetTimeString().c_str());
     
     // 记录释放后的内存状态
@@ -750,22 +733,14 @@ void BleConfig::ble_host_task(void *param) {
              GetTimeString().c_str(), (int)(after_deinit.total_heap - before_deinit.total_heap));
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务退出前最终内存状态, 任务生命周期内总消耗(估算): %d字节", 
              GetTimeString().c_str(), (int)(start_snapshot.total_heap - after_deinit.total_heap));
-
-
-
-
-    // size_t after_deinit_free_internal_mem = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    // size_t after_deinit_free_total_mem = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    // size_t after_deinit_min_free_heap = esp_get_minimum_free_heap_size();
-    // ESP_LOGI(TAG, "%s @ble_host_task: nimble_port_deinit()后内存状态 - 内部RAM: %zu字节, 总堆内存: %zu字节, 最小剩余堆内存: %zu字节, nimble_port_deinit释放: %d字节", 
-    //          GetTimeString().c_str(), after_deinit_free_internal_mem, after_deinit_free_total_mem, after_deinit_min_free_heap,
-    //          (int)(after_deinit_free_total_mem - before_deinit_free_total_mem));
-    // ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务退出前最终内存状态 - 内部RAM: %zu字节, 总堆内存: %zu字节, 最小剩余堆内存: %zu字节, 任务生命周期内总消耗(估算): %d字节", 
-    //          GetTimeString().c_str(), after_deinit_free_internal_mem, after_deinit_free_total_mem, after_deinit_min_free_heap,
-    //          (int)(start_free_total_mem - after_deinit_free_total_mem));
     
     BleConfig::ble_host_task_state = BLE_TASK_STOPPED;     // 设置任务状态为已停止
     ESP_LOGI(TAG, "%s @ble_host_task: 任务状态已设置为STOPPED，准备自杀退出", GetTimeString().c_str());
+
+    // 清空全局任务句柄，表示任务已自行退出
+    ble_host_task_handle = NULL;
+    // 在任务自行退出前，需要将全局任务句柄设置为NULL，这样其他部分代码可以通过检查句柄是否为NULL来判断任务状态。
+
     vTaskDelete(NULL); // 任务自杀，安全退出
 }
 
@@ -785,11 +760,6 @@ void BleConfig::SendWifiStatus(wifi_config_status_t status) {
     MemorySnapshot pre_alloc = get_memory_snapshot();
     log_memory_state(TAG, "@SendWifiStatus: 分配内存前先检查可用堆内存", pre_alloc);
 
-    // size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    // ESP_LOGI(TAG, "%s @SendWifiStatus: 分配内存前先检查可用堆内存，当前可用堆内存: %d 字节", GetTimeString().c_str(), free_heap);
-
-    esp_task_wdt_reset();   // 重置任务看门狗
-    
     // 分配内存
     struct os_mbuf *om = ble_hs_mbuf_from_flat(&status, sizeof(status));
     if (!om) {
