@@ -774,105 +774,64 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
         return 0;
     }
 
-    ESP_LOGD(TAG, "%s @ble_gap_event: 收到BLE事件: %d", GetTimeString().c_str(), event->type);
-    
     switch (event->type) {
-
-    // === 新增加密状态处理 === 
-    case BLE_GAP_EVENT_ENC_CHANGE:
-        if(event->enc_change.status == 0) {
-            ESP_LOGI(TAG, "%s @ble_gap_event: 加密状态变更: %s", 
-                    GetTimeString().c_str(), event->enc_change.status == 0 ? "已加密" : "未加密");
-        } else {
-            ESP_LOGE(TAG, "%s @ble_gap_event: 加密失败, 状态码: %d", GetTimeString().c_str(), event->enc_change.status);
-        }
-        return 0;
-
-    case BLE_GAP_EVENT_CONNECT:
-        if (!g_ble_config_instance) {
-            ESP_LOGE(TAG, "%s @ble_gap_event: CONNECT事件处理失败：全局实例不存在", GetTimeString().c_str());
-            assert(g_ble_config_instance != nullptr);
-            return 0;
-        }
-        ESP_LOGI(TAG, "%s @ble_gap_event: BLE连接事件 - 状态: %d", GetTimeString().c_str(), event->connect.status);
-        if (event->connect.status == 0) {
-            ESP_LOGI(TAG, "%s @ble_gap_event: BLE设备已连接，连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
-            rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
-            if (rc == 0) {
-                ESP_LOGI(TAG, "%s @ble_gap_event: 连接设备地址: %02x:%02x:%02x:%02x:%02x:%02x",
-                        GetTimeString().c_str(), desc.peer_id_addr.val[5], desc.peer_id_addr.val[4], 
-                        desc.peer_id_addr.val[3], desc.peer_id_addr.val[2], 
-                        desc.peer_id_addr.val[1], desc.peer_id_addr.val[0]);
+        case BLE_GAP_EVENT_CONNECT:
+            ESP_LOGI(TAG, "%s @ble_gap_event: 收到连接事件，状态: %d", 
+                     GetTimeString().c_str(), event->connect.status);
+            
+            if (event->connect.status == 0) {
+                // 连接成功
+                rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
+                if (rc == 0) {
+                    ESP_LOGI(TAG, "%s @ble_gap_event: 连接成功，对方地址: %02x:%02x:%02x:%02x:%02x:%02x",
+                             GetTimeString().c_str(), desc.peer_id_addr.val[5], desc.peer_id_addr.val[4],
+                             desc.peer_id_addr.val[3], desc.peer_id_addr.val[2],
+                             desc.peer_id_addr.val[1], desc.peer_id_addr.val[0]);
+                }
+                
+                // 保存连接句柄
+                g_ble_config_instance->conn_handle_ = event->connect.conn_handle;
+                ESP_LOGI(TAG, "%s @ble_gap_event: 保存连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
+                g_ble_config_instance->StopAdvertising();
             } else {
-                ESP_LOGW(TAG, "%s @ble_gap_event: 无法获取连接设备信息: %d", GetTimeString().c_str(), rc);
+                ESP_LOGW(TAG, "%s @ble_gap_event: 连接失败，重新开始广播", GetTimeString().c_str());
+                g_ble_config_instance->StartAdvertising();
             }
-            g_ble_config_instance->conn_handle_ = event->connect.conn_handle;
-            ESP_LOGI(TAG, "%s @ble_gap_event: 保存连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
-            g_ble_config_instance->StopAdvertising();
-        } else {
-            ESP_LOGW(TAG, "%s @ble_gap_event: 连接失败，重新开始广播", GetTimeString().c_str());
+            return 0;
+
+        case BLE_GAP_EVENT_DISCONNECT:
+            ESP_LOGI(TAG, "%s @ble_gap_event: BLE断开连接 - 原因: %d", GetTimeString().c_str(), event->disconnect.reason);
+            g_ble_config_instance->conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+            ESP_LOGI(TAG, "%s @ble_gap_event: 连接已断开，重新开始广播", GetTimeString().c_str());
             g_ble_config_instance->StartAdvertising();
-        }
-        return 0;
-
-    case BLE_GAP_EVENT_DISCONNECT:
-        if (!g_ble_config_instance) {
-            ESP_LOGE(TAG, "%s @ble_gap_event: DISCONNECT事件处理失败：全局实例不存在", GetTimeString().c_str());
-            assert(g_ble_config_instance != nullptr);
             return 0;
-        }
-        ESP_LOGI(TAG, "%s @ble_gap_event: BLE断开连接 - 原因: %d", GetTimeString().c_str(), event->disconnect.reason);
-        g_ble_config_instance->conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
-        ESP_LOGI(TAG, "%s @ble_gap_event: 连接已断开，重新开始广播", GetTimeString().c_str());
-        g_ble_config_instance->StartAdvertising();
-        return 0;
 
-    case BLE_GAP_EVENT_ADV_COMPLETE:
-        if (!g_ble_config_instance) {
-            ESP_LOGE(TAG, "%s @ble_gap_event: ADV_COMPLETE事件处理失败：全局实例不存在", GetTimeString().c_str());
-            assert(g_ble_config_instance != nullptr);
+        case BLE_GAP_EVENT_ADV_COMPLETE:
+            ESP_LOGI(TAG, "%s @ble_gap_event: BLE广播完成事件 - 状态: %d", GetTimeString().c_str(), event->adv_complete.reason);
             return 0;
-        }
-        ESP_LOGI(TAG, "%s @ble_gap_event: BLE广播完成事件 - 状态: %d", GetTimeString().c_str(), event->adv_complete.reason);
-        return 0;
 
-    case BLE_GAP_EVENT_MTU:
-        if (!g_ble_config_instance) {
-            ESP_LOGE(TAG, "%s @ble_gap_event: MTU事件处理失败：全局实例不存在", GetTimeString().c_str());
-            assert(g_ble_config_instance != nullptr);
+        case BLE_GAP_EVENT_MTU:
+            ESP_LOGI(TAG, "%s @ble_gap_event: MTU交换事件 - 连接句柄: %d, MTU: %d", GetTimeString().c_str(), event->mtu.conn_handle, event->mtu.value);
             return 0;
-        }
-        ESP_LOGI(TAG, "%s @ble_gap_event: MTU交换事件 - 连接句柄: %d, MTU: %d", GetTimeString().c_str(), event->mtu.conn_handle, event->mtu.value);
-        return 0;
 
-    case BLE_GAP_EVENT_CONN_UPDATE:
-        if (!g_ble_config_instance) {
-            ESP_LOGE(TAG, "%s @ble_gap_event: CONN_UPDATE事件处理失败：全局实例不存在", GetTimeString().c_str());
-            assert(g_ble_config_instance != nullptr);
+        case BLE_GAP_EVENT_CONN_UPDATE:
+            ESP_LOGI(TAG, "%s @ble_gap_event: 连接参数更新事件 - 连接句柄: %d, 状态: %d", GetTimeString().c_str(), event->conn_update.conn_handle, event->conn_update.status);
             return 0;
-        }
-        ESP_LOGI(TAG, "%s @ble_gap_event: 连接参数更新事件 - 连接句柄: %d, 状态: %d", GetTimeString().c_str(), event->conn_update.conn_handle, event->conn_update.status);
-        return 0;
 
-    case BLE_GAP_EVENT_SUBSCRIBE:
-        if (!g_ble_config_instance) {
-            ESP_LOGE(TAG, "%s @ble_gap_event: SUBSCRIBE事件处理失败：全局实例不存在", GetTimeString().c_str());
-            assert(g_ble_config_instance != nullptr);
+        case BLE_GAP_EVENT_SUBSCRIBE:
+            ESP_LOGI(TAG, "%s @ble_gap_event: BLE订阅事件 - 连接句柄: %d, 属性句柄: %d, 订阅状态: %d", 
+                    GetTimeString().c_str(), event->subscribe.conn_handle, event->subscribe.attr_handle, 
+                    event->subscribe.cur_notify);
+            if (event->subscribe.attr_handle == g_ble_config_instance->status_val_handle_ &&
+                event->subscribe.cur_notify) {
+                ESP_LOGI(TAG, "%s @ble_gap_event: 客户端已订阅状态通知，发送初始状态", GetTimeString().c_str());
+                g_ble_config_instance->SendWifiStatus(WIFI_STATUS_IDLE);
+            }
             return 0;
-        }
-        ESP_LOGI(TAG, "%s @ble_gap_event: BLE订阅事件 - 连接句柄: %d, 属性句柄: %d, 订阅状态: %d", 
-                GetTimeString().c_str(), event->subscribe.conn_handle, event->subscribe.attr_handle, 
-                event->subscribe.cur_notify);
-        if (event->subscribe.attr_handle == g_ble_config_instance->status_val_handle_ &&
-            event->subscribe.cur_notify) {
-            ESP_LOGI(TAG, "%s @ble_gap_event: 客户端已订阅状态通知，发送初始状态", GetTimeString().c_str());
-            g_ble_config_instance->SendWifiStatus(WIFI_STATUS_IDLE);
-        }
-        return 0;
 
-    default:
-        ESP_LOGD(TAG, "%s @ble_gap_event: 未处理的BLE事件: %d", GetTimeString().c_str(), event->type);
-        return 0;
+        default:
+            ESP_LOGD(TAG, "%s @ble_gap_event: 未处理的BLE事件: %d", GetTimeString().c_str(), event->type);
+            return 0;
     }
 }
 
@@ -885,6 +844,19 @@ void BleConfig::Deinitialize() {
 
     // 1. 先停止所有BLE活动
     ESP_LOGI(TAG, "%s @Deinitialize: 步骤1 - 停止所有BLE活动", GetTimeString().c_str());
+    
+    // 先断开所有BLE连接
+    ESP_LOGI(TAG, "%s @Deinitialize: 开始断开所有BLE连接", GetTimeString().c_str());
+    int disconnect_count = 0;
+    for (int i = 0; i < CONFIG_BT_NIMBLE_MAX_CONNECTIONS; i++) {
+        int rc = ble_gap_terminate(i, BLE_ERR_REM_USER_CONN_TERM);  // 强制断开连接，错误码为用户终止
+        if (rc == 0) {
+            disconnect_count++;
+        }
+    }
+    ESP_LOGI(TAG, "%s @Deinitialize: 已断开 %d 个连接", GetTimeString().c_str(), disconnect_count);
+    vTaskDelay(pdMS_TO_TICKS(100));  // 等待一段时间，确保连接断开完成
+    
     StopAdvertising();                  // 停止广播
     vTaskDelay(pdMS_TO_TICKS(100));     // 等待一段时间，确保广播已停止
     ESP_LOGI(TAG, "%s @Deinitialize: 广播已停止", GetTimeString().c_str());
@@ -912,7 +884,7 @@ void BleConfig::Deinitialize() {
 
     // 4. 等待任务退出，带超时机制
     ESP_LOGI(TAG, "%s @Deinitialize: 步骤4 - 等待BLE主机任务退出", GetTimeString().c_str());
-    const TickType_t xMaxWaitTicks = pdMS_TO_TICKS(3000);   // 3秒, 等待任务退出的最长时间
+    const TickType_t xMaxWaitTicks = pdMS_TO_TICKS(3000);   // 设置 3 秒, 等待任务退出的最长时间
     TickType_t xStartTicks = xTaskGetTickCount();           // 记录任务开始的时间
     
     int wait_count = 0;  // 等待计数器，用于控制日志输出频率
