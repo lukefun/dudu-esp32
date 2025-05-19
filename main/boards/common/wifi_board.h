@@ -4,6 +4,7 @@
 #include "board.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h" // 添加 FreeRTOS 任务头文件
+#include "ble_config/ble_task_state.h" 
 
 // ble-WiFi 连接失败原因枚举
 enum ble_wifi_reason_t { // 改名为 ble_wifi_reason_t
@@ -29,6 +30,21 @@ protected:
     
     // 新增：启动配网模式
     void StartConfigMode();
+
+    // BLE配网相关辅助函数
+    // 新增：保存WiFi配置
+    void SaveWifiCredentials(const std::string &ssid, const std::string &password); //
+    // 新增：释放BLE资源
+    bool ReleaseBleResources(const MemorySnapshot &initial_snapshot);
+    // 紧急措施处理
+    void TakeEmergencyMeasures();
+    // 启动WiFi并等待连接
+    bool StartWifiAndWaitForConnection();
+    // 新增：处理WiFi连接成功
+    void HandleWifiConnectSuccess();
+    // 新增：处理WiFi连接失败
+    void HandleWifiConnectFailure();
+
 
     // 新增：保存BLE配网过程中收到的SSID/密码
     std::string ble_ssid_;
