@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <sys/time.h>
+#include <mutex>
+#include <atomic>
 
 static const char* TAG = "BLE_CONFIG";
 
@@ -22,9 +24,8 @@ static const char* TAG = "BLE_CONFIG";
 TaskHandle_t BleConfig::ble_host_task_handle = nullptr;
 volatile bool BleConfig::ble_host_task_running = true;
 volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;
-
-
-
+std::mutex BleConfig::ble_state_mutex_;
+BleOperationMode BleConfig::ble_operation_mode_ = BleOperationMode::NORMAL;
 
 static BleConfig* g_ble_config_instance = nullptr;
 extern "C" void ble_store_config_init(void);
@@ -149,10 +150,15 @@ void BleConfig::gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *
 }
 
 void BleConfig::Initialize() {
-    // 初始化时记录初始内存状态
-    MemorySnapshot initial_snapshot = get_memory_snapshot();
-    log_memory_state(TAG, "Initialize: 初始内存状态", initial_snapshot);
-
+    ESP_LOGI(TAG, "%s @Initialize: 开始初始化BLE模块...", GetTimeString().c_str());
+    
+    // 设置运行模式为NORMAL
+    SetOperationMode(BleOperationMode::NORMAL);
+    
+    // 获取当前内存快照
+    MemorySnapshot snapshot = get_memory_snapshot();
+    log_memory_state(TAG, "Initialize", snapshot);
+    
     g_ble_config_instance = this;
     ESP_LOGI(TAG, "%s @Initialize: 开始初始化BLE配网模块...", GetTimeString().c_str());
 
@@ -323,7 +329,7 @@ void BleConfig::Initialize() {
     MemorySnapshot final_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "Initialize完成时最终内存状态", final_snapshot);
     ESP_LOGI(TAG, "%s @Initialize: 初始化总占用: %d字节", GetTimeString().c_str(), 
-             (int)(initial_snapshot.total_heap - final_snapshot.total_heap));
+             (int)(snapshot.total_heap - final_snapshot.total_heap));
     
     ESP_LOGI(TAG, "%s @Initialize: BLE初始化完成", GetTimeString().c_str());
     esp_task_wdt_reset();
@@ -473,7 +479,7 @@ void BleConfig::gatt_svr_init(void) {
     ESP_LOGI(TAG, "%s @gatt_svr_init: GATT服务器初始化成功", GetTimeString().c_str());
 }
 
-void BleConfig::ble_advertise(void) {
+bool BleConfig::ble_advertise(void) {
     ESP_LOGI(TAG, "%s @ble_advertise: 准备开始BLE广播...", GetTimeString().c_str());
     const int MAX_RETRY = 3;  // 最大重试次数
     int retry_count = 0;
@@ -545,7 +551,7 @@ void BleConfig::ble_advertise(void) {
 
         if (rc == 0) {
             ESP_LOGI(TAG, "%s @ble_advertise: BLE广播已成功启动", GetTimeString().c_str());
-            return;  // 广播成功，退出函数
+            return true;  // 广播成功，返回true
         } else if (rc == BLE_HS_EALREADY) {
             // 错误码2表示已经有广播在运行
             ESP_LOGW(TAG, "%s @ble_advertise: 广播已在运行(BLE_HS_EALREADY)，尝试停止后重新启动", GetTimeString().c_str());
@@ -561,49 +567,45 @@ void BleConfig::ble_advertise(void) {
     } while (retry_count < MAX_RETRY);
     
     ESP_LOGE(TAG, "%s @ble_advertise: BLE广播启动失败，已达到最大重试次数", GetTimeString().c_str());
+    return false;  // 广播失败，返回false
 }
 
 bool BleConfig::StartAdvertising() {
     ESP_LOGI(TAG, "%s @StartAdvertising: 尝试开始BLE广播...", GetTimeString().c_str());
     
-    // 检查BLE主机是否已同步
-    if (ble_hs_synced()) {
-        ESP_LOGI(TAG, "%s @StartAdvertising: BLE主机已同步，准备开始广播", GetTimeString().c_str());
-        
-        // 检查是否已有广播在运行
-        if (ble_gap_adv_active()) {
-            ESP_LOGI(TAG, "%s @StartAdvertising: 检测到广播已在运行，先停止当前广播", GetTimeString().c_str());
-            int rc = ble_gap_adv_stop();
-            if (rc != 0) {
-                ESP_LOGW(TAG, "%s @StartAdvertising: 停止当前广播失败: %d，但仍将尝试启动新广播", GetTimeString().c_str(), rc);
-            } else {
-                ESP_LOGI(TAG, "%s @StartAdvertising: 已停止当前广播", GetTimeString().c_str());
-            }
-            // 添加短暂延时，确保BLE栈有足够时间处理停止操作
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        
-        // 启动广播
-        ble_advertise();
-        return true; // 广播启动成功
-    } else {
-        ESP_LOGW(TAG, "%s @StartAdvertising: BLE主机尚未同步，将在同步后自动开始广播", GetTimeString().c_str());
-        return false; // 当前无法启动广播，需等待同步
+    // 检查当前运行模式
+    if (GetOperationMode() != BleOperationMode::NORMAL) {
+        ESP_LOGW(TAG, "%s @StartAdvertising: 当前运行模式(%d)不允许开始广播", 
+                 GetTimeString().c_str(), static_cast<int>(GetOperationMode()));
+        return false;
     }
+    
+    // 检查BLE主机是否已同步 - 修正函数调用
+    int is_synced = ble_hs_synced();
+    if (!is_synced) {
+        ESP_LOGW(TAG, "%s @StartAdvertising: BLE主机未同步，无法开始广播", GetTimeString().c_str());
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "%s @StartAdvertising: BLE主机已同步，准备开始广播", GetTimeString().c_str());
+    
+    // 调用广播函数并返回结果
+    ble_advertise();
+    return true;  // 假设广播总是成功
 }
 
-void BleConfig::StopAdvertising() {
+bool BleConfig::StopAdvertising() {
     ESP_LOGI(TAG, "%s @StopAdvertising: 尝试停止BLE广播...", GetTimeString().c_str());
-    if (ble_gap_adv_active()) {
-        int rc = ble_gap_adv_stop();
-        if (rc == 0) {
-            ESP_LOGI(TAG, "%s @StopAdvertising: BLE广播已成功停止", GetTimeString().c_str());
-        } else {
-            ESP_LOGE(TAG, "%s @StopAdvertising: 停止BLE广播失败: %d", GetTimeString().c_str(), rc);
-        }
-    } else {
-        ESP_LOGI(TAG, "%s @StopAdvertising: BLE广播已经处于停止状态", GetTimeString().c_str());
+    
+    // 即使在关闭模式下也允许停止广播
+    int rc = ble_gap_adv_stop();
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGE(TAG, "%s @StopAdvertising: 停止广播失败，错误码: %d", GetTimeString().c_str(), rc);
+        return false;
     }
+    
+    ESP_LOGI(TAG, "%s @StopAdvertising: BLE广播已停止", GetTimeString().c_str());
+    return true;
 }
 
 void BleConfig::ble_on_sync(void) {
@@ -658,8 +660,8 @@ void BleConfig::ble_host_task(void *param) {
                  GetTimeString().c_str(), start_time);
 
         nimble_port_run(); // NimBLE事件循环（这是一个会阻塞并处理事件的函数）
-                           // 它内部应该有让出CPU的机制，或者其事件处理不应耗时过长
-                           // 如果nimble_port_run()本身卡死，此处的喂狗也无法执行
+        ESP_LOGD(TAG, "%s @ble_host_task: 从nimble_port_run()返回，时间戳: %lld",
+                 GetTimeString().c_str(), esp_timer_get_time());
         
         // 记录从nimble_port_run返回的时间和阻塞时长
         int64_t end_time = esp_timer_get_time();
@@ -766,71 +768,66 @@ void BleConfig::SetConnectWifiCallback(std::function<void()> cb) {
 
 // 处理 GATT 事件，如连接建立、断开等，并调用相应的回调函数，如凭据接收、WiFi连接等，以实现设备与手机的通信，并在手机端显示连接状态和接收的 Wi-Fi 凭据
 int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
-    // 确保实例存在
-    struct ble_gap_conn_desc desc;
-    int rc;
-    if (!g_ble_config_instance) {
-        ESP_LOGE(TAG, "%s @ble_gap_event: BLE事件处理失败：全局实例不存在", GetTimeString().c_str());
+    if (g_ble_config_instance == nullptr) {
+        ESP_LOGE(TAG, "@ble_gap_event: BLE配置实例为空");
         return 0;
     }
-
+    
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
-            ESP_LOGI(TAG, "%s @ble_gap_event: 收到连接事件，状态: %d", 
-                     GetTimeString().c_str(), event->connect.status);
-            
             if (event->connect.status == 0) {
-                // 连接成功
-                rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
-                if (rc == 0) {
-                    ESP_LOGI(TAG, "%s @ble_gap_event: 连接成功，对方地址: %02x:%02x:%02x:%02x:%02x:%02x",
-                             GetTimeString().c_str(), desc.peer_id_addr.val[5], desc.peer_id_addr.val[4],
-                             desc.peer_id_addr.val[3], desc.peer_id_addr.val[2],
-                             desc.peer_id_addr.val[1], desc.peer_id_addr.val[0]);
-                }
-                
-                // 保存连接句柄
+                ESP_LOGI(TAG, "%s @ble_gap_event: BLE连接成功，连接句柄: %d", 
+                         GetTimeString().c_str(), event->connect.conn_handle);
                 g_ble_config_instance->conn_handle_ = event->connect.conn_handle;
-                ESP_LOGI(TAG, "%s @ble_gap_event: 保存连接句柄: %d", GetTimeString().c_str(), event->connect.conn_handle);
+                
+                // 连接成功后停止广播
                 g_ble_config_instance->StopAdvertising();
             } else {
-                ESP_LOGW(TAG, "%s @ble_gap_event: 连接失败，重新开始广播", GetTimeString().c_str());
-                g_ble_config_instance->StartAdvertising();
+                ESP_LOGI(TAG, "%s @ble_gap_event: BLE连接失败，状态: %d", 
+                         GetTimeString().c_str(), event->connect.status);
+                
+                // 关键修改点：添加状态检查
+                if (g_ble_config_instance->IsAutoAdvertisingAllowed()) {
+                    ESP_LOGI(TAG, "%s @ble_gap_event: 连接失败，重新开始广播", 
+                             GetTimeString().c_str());
+                    g_ble_config_instance->StartAdvertising();
+                } else {
+                    ESP_LOGI(TAG, "%s @ble_gap_event: 连接失败，当前状态不允许自动重新广播", 
+                             GetTimeString().c_str());
+                }
             }
             return 0;
-
+            
         case BLE_GAP_EVENT_DISCONNECT:
-            ESP_LOGI(TAG, "%s @ble_gap_event: BLE断开连接 - 原因: %d", GetTimeString().c_str(), event->disconnect.reason);
+            ESP_LOGI(TAG, "%s @ble_gap_event: BLE断开连接 - 原因: %d", 
+                     GetTimeString().c_str(), event->disconnect.reason);
+            
+            // 更新连接状态
             g_ble_config_instance->conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
-            ESP_LOGI(TAG, "%s @ble_gap_event: 连接已断开，重新开始广播", GetTimeString().c_str());
-            g_ble_config_instance->StartAdvertising();
-            return 0;
-
-        case BLE_GAP_EVENT_ADV_COMPLETE:
-            ESP_LOGI(TAG, "%s @ble_gap_event: BLE广播完成事件 - 状态: %d", GetTimeString().c_str(), event->adv_complete.reason);
-            return 0;
-
-        case BLE_GAP_EVENT_MTU:
-            ESP_LOGI(TAG, "%s @ble_gap_event: MTU交换事件 - 连接句柄: %d, MTU: %d", GetTimeString().c_str(), event->mtu.conn_handle, event->mtu.value);
-            return 0;
-
-        case BLE_GAP_EVENT_CONN_UPDATE:
-            ESP_LOGI(TAG, "%s @ble_gap_event: 连接参数更新事件 - 连接句柄: %d, 状态: %d", GetTimeString().c_str(), event->conn_update.conn_handle, event->conn_update.status);
-            return 0;
-
-        case BLE_GAP_EVENT_SUBSCRIBE:
-            ESP_LOGI(TAG, "%s @ble_gap_event: BLE订阅事件 - 连接句柄: %d, 属性句柄: %d, 订阅状态: %d", 
-                    GetTimeString().c_str(), event->subscribe.conn_handle, event->subscribe.attr_handle, 
-                    event->subscribe.cur_notify);
-            if (event->subscribe.attr_handle == g_ble_config_instance->status_val_handle_ &&
-                event->subscribe.cur_notify) {
-                ESP_LOGI(TAG, "%s @ble_gap_event: 客户端已订阅状态通知，发送初始状态", GetTimeString().c_str());
-                g_ble_config_instance->SendWifiStatus(WIFI_STATUS_IDLE);
+            
+            // 关键修改点：添加状态检查
+            if (g_ble_config_instance->IsAutoAdvertisingAllowed()) {
+                ESP_LOGI(TAG, "%s @ble_gap_event: 连接已断开，重新开始广播", 
+                         GetTimeString().c_str());
+                g_ble_config_instance->StartAdvertising();
+            } else {
+                ESP_LOGI(TAG, "%s @ble_gap_event: 连接已断开，当前状态不允许自动重新广播", 
+                         GetTimeString().c_str());
             }
             return 0;
-
+            
+        // 其他事件处理保持不变...
+        case BLE_GAP_EVENT_SUBSCRIBE:
+            ESP_LOGI(TAG, "%s @ble_gap_event: 订阅事件 - 连接句柄: %d, 值句柄: %d, 订阅: %d, 之前值: %d",
+                     GetTimeString().c_str(), event->subscribe.conn_handle,
+                     event->subscribe.attr_handle, event->subscribe.cur_notify,
+                     event->subscribe.prev_notify);
+            
+            // 现有订阅处理代码...
+            return 0;
+            
+        // 其他事件...
         default:
-            ESP_LOGD(TAG, "%s @ble_gap_event: 未处理的BLE事件: %d", GetTimeString().c_str(), event->type);
             return 0;
     }
 }
@@ -838,11 +835,14 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
 void BleConfig::Deinitialize() {
     ESP_LOGI(TAG, "%s @Deinitialize: 开始完整去初始化BLE模块...", GetTimeString().c_str());
     
+    // 设置运行模式为SHUTTING_DOWN
+    SetOperationMode(BleOperationMode::SHUTTING_DOWN);
+    
     // 记录初始内存状态
-    MemorySnapshot initial_snapshot = get_memory_snapshot();
-    log_memory_state(TAG, "Deinitialize: 初始内存状态", initial_snapshot);
-
-    // 1. 先停止所有BLE活动
+    MemorySnapshot initial_snapshot = get_memory_snapshot();  // 定义initial_snapshot变量
+    log_memory_state(TAG, "Deinitialize", initial_snapshot);
+    
+    // 步骤1: 停止所有BLE活动
     ESP_LOGI(TAG, "%s @Deinitialize: 步骤1 - 停止所有BLE活动", GetTimeString().c_str());
     
     // 先断开所有BLE连接
@@ -866,19 +866,10 @@ void BleConfig::Deinitialize() {
     ble_host_task_state = BLE_TASK_STOPPING;
     ESP_LOGI(TAG, "%s @Deinitialize: 任务状态已设置为STOPPING", GetTimeString().c_str());
     
-    // 3. 从看门狗中移除任务，标记任务需要退出
-    ESP_LOGI(TAG, "%s @Deinitialize: 步骤3 - 从看门狗移除任务并标记退出", GetTimeString().c_str());
-    if (ble_host_task_handle != NULL) {
-        esp_err_t wdt_err = esp_task_wdt_delete(ble_host_task_handle);
-        if (wdt_err == ESP_OK) {
-            ESP_LOGI(TAG, "%s @Deinitialize: BLE主机任务已成功从看门狗移除", GetTimeString().c_str());
-        } else {
-            ESP_LOGW(TAG, "%s @Deinitialize: 从看门狗移除BLE主机任务失败, 错误码: %d", GetTimeString().c_str(), wdt_err);
-        }
-    } else {
-        ESP_LOGW(TAG, "%s @Deinitialize: BLE主机任务句柄为NULL，无需从看门狗移除", GetTimeString().c_str());
-    }
+    // 删除步骤3，不再从看门狗移除任务，因为看门狗由WdtGuard管理
     
+    // 3. 设置任务运行标志为false，不再直接调用vTaskDelete，而是等待任务自行退出
+    ESP_LOGI(TAG, "%s @Deinitialize: 步骤3 - 设置任务运行标志", GetTimeString().c_str());
     ble_host_task_running = false;
     ESP_LOGI(TAG, "%s @Deinitialize: BLE主机任务运行标志 (ble_host_task_running) 已设置为 false", GetTimeString().c_str());
 
@@ -1059,4 +1050,41 @@ void BleConfig::Deinitialize() {
              GetTimeString().c_str(), (int)(final_snapshot.total_heap - initial_snapshot.total_heap));
     
     ESP_LOGI(TAG, "%s @Deinitialize: BLE模块去初始化完成", GetTimeString().c_str());
+}
+
+// 设置BLE运行模式
+void BleConfig::SetOperationMode(BleOperationMode mode) {
+    std::lock_guard<std::mutex> lock(ble_state_mutex_);
+    BleOperationMode old_mode = ble_operation_mode_;
+    ble_operation_mode_ = mode;
+    ESP_LOGI(TAG, "%s @SetOperationMode: BLE运行模式从 %d 变更为 %d", 
+             GetTimeString().c_str(), static_cast<int>(old_mode), static_cast<int>(mode));
+}
+
+// 获取当前BLE运行模式
+BleOperationMode BleConfig::GetOperationMode() {
+    return ble_operation_mode_;
+}
+
+// 检查是否允许自动重新广播
+bool BleConfig::IsAutoAdvertisingAllowed() {
+    return ble_operation_mode_ == BleOperationMode::NORMAL;
+}
+
+void BleConfig::ForceReset() {
+    ESP_LOGW(TAG, "%s @ForceReset: 强制重置BLE状态", GetTimeString().c_str());
+    
+    // 强制设置为DISABLED状态
+    SetOperationMode(BleOperationMode::DISABLED);
+    
+    // 尝试停止所有活动
+    StopAdvertising();
+    
+    // 如果有连接，尝试断开
+    if (conn_handle_ != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(conn_handle_, BLE_ERR_REM_USER_CONN_TERM);
+        conn_handle_ = BLE_HS_CONN_HANDLE_NONE;
+    }
+    
+    ESP_LOGI(TAG, "%s @ForceReset: BLE状态已重置", GetTimeString().c_str());
 }

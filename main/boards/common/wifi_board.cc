@@ -508,100 +508,32 @@ void WifiBoard::SaveWifiCredentials(const std::string &ssid, const std::string &
 bool WifiBoard::ReleaseBleResources(const MemorySnapshot &initial_snapshot) {
     ESP_LOGI(TAG, "%s @ReleaseBleResources：开始释放BLE资源", GetTimeString().c_str());
     
-    // 去初始化BLE模块并重置看门狗，确保BLE模块已完全停止运行。
-    esp_task_wdt_reset();
-    BleConfig::GetInstance().Deinitialize();    
-    esp_task_wdt_reset();
-
-    vTaskDelay(pdMS_TO_TICKS(100)); // 等待BLE资源彻底释放
+    auto& ble_config = BleConfig::GetInstance();
     
-    // 去初始化后，检查内存状态
-    MemorySnapshot deinitialize_after_snapshot = get_memory_snapshot();
-    log_memory_state(TAG, "ReleaseBleResources：去初始化BLE后", deinitialize_after_snapshot);
+    // 记录释放前的内存状态
+    MemorySnapshot before_release = get_memory_snapshot();
+    log_memory_state(TAG, "ReleaseBleResources：释放前内存状态", before_release);
+    ESP_LOGI(TAG, "%s @ReleaseBleResources：与初始状态相比内存变化: %d字节", 
+             GetTimeString().c_str(), (int)(before_release.total_heap - initial_snapshot.total_heap));
     
-    // 计算并输出内存差异
-    MemorySnapshot diff = initial_snapshot.GetDifference(deinitialize_after_snapshot);
-    ESP_LOGI(TAG, "去初始化BLE后: 内部RAM: %.2fKB, 总堆: %.2fKB", 
-             diff.internal_ram / 1024.0f, diff.total_heap / 1024.0f);
-
-    // 循环检查BLE是否完全释放
-    bool ble_fully_released = false;    // 标记BLE是否完全释放
-    int ble_release_retry = 0;          // 重试计数器
-    const int ble_release_max_retry = 5;    // 最大重试次数
-    int ble_force_deinit_count = 0;         // 强制去初始化计数器
-    int last_free_sram = 0;                  // 上次内存值
+    // 先设置运行模式为SHUTTING_DOWN，防止断开连接时自动重新广播
+    ble_config.SetOperationMode(BleOperationMode::SHUTTING_DOWN);
     
-    // 循环检查BLE是否完全释放
-    for (; ble_release_retry < ble_release_max_retry; ++ble_release_retry) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_task_wdt_reset();
-        
-        // 获取当前内部RAM可用大小
-        int free_sram_check = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        
-        bool adv = BleConfig::GetInstance().IsAdvertising();
-        bool running = BleConfig::ble_host_task_running;
-        
-        MemorySnapshot snapshot = get_memory_snapshot();
-        log_memory_state(TAG, "@ReleaseBleResources：等待BLE彻底释放内存", snapshot);
-        
-        ESP_LOGI(TAG, "%s @ReleaseBleResources：BLE状态：Advertising=%d, Running=%d, 内存: %d字节, 重试: %d", 
-                GetTimeString().c_str(), adv, running, free_sram_check, ble_release_retry);
-        
-        // 检查内存是否异常下降
-        if (last_free_sram != 0 && free_sram_check < last_free_sram - 4096) {
-            ESP_LOGW(TAG, "%s @ReleaseBleResources：内存异常下降，上次: %d, 本次: %d", 
-                    GetTimeString().c_str(), last_free_sram, free_sram_check);
-        }
-        
-        // 更新上次内存值
-        last_free_sram = free_sram_check;
-        
-        if (!adv && !running && free_sram_check > 60000) {
-            // BLE已停止且内存充足
-            ESP_LOGI(TAG, "%s @ReleaseBleResources：BLE已停止且内存充足", GetTimeString().c_str());
-            ble_fully_released = true;
-            break;
-        } 
-        else if (!adv && !running) {
-            // BLE已停止但内存不足
-            ESP_LOGW(TAG, "%s @ReleaseBleResources：BLE已停止但内存不足(%d字节)", 
-                    GetTimeString().c_str(), free_sram_check);
-            heap_caps_check_integrity_all(true);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        else {
-            // BLE未完全停止
-            ESP_LOGW(TAG, "%s @ReleaseBleResources：BLE未完全停止，重试中...(%d/%d)", 
-                    GetTimeString().c_str(), ble_release_retry + 1, ble_release_max_retry);
-            
-            // 偶数次重试时强制清理
-            if ((ble_release_retry + 1) % 2 == 0) {
-                ESP_LOGW(TAG, "%s @ReleaseBleResources：强制清理BLE资源(第%d次)", 
-                        GetTimeString().c_str(), ++ble_force_deinit_count);
-                
-                // 检查并强制结束BLE任务
-                TaskHandle_t ble_task = BleConfig::GetBleHostTaskHandle();
-                if (ble_task != NULL) {
-                    ESP_LOGW(TAG, "%s @ReleaseBleResources：强制删除BLE任务", GetTimeString().c_str());
-                    vTaskDelete(ble_task);
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                }
-                
-                heap_caps_check_integrity_all(true);
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
-        }
-    }
+    // 去初始化BLE
+    ble_config.Deinitialize();
     
-    // 如果BLE未完全释放，采取紧急措施
-    if (!ble_fully_released) {
-        TakeEmergencyMeasures();
-    }
-    else {
-        ESP_LOGI(TAG, "%s @ReleaseBleResources：BLE资源已彻底释放", GetTimeString().c_str());
-    }
+    // 等待一段时间确保资源释放完成
+    vTaskDelay(pdMS_TO_TICKS(300));
     
+    // 记录释放后的内存状态
+    MemorySnapshot after_release = get_memory_snapshot();
+    log_memory_state(TAG, "ReleaseBleResources：释放后内存状态", after_release);
+    ESP_LOGI(TAG, "%s @ReleaseBleResources：释放过程中内存恢复: %d字节", 
+             GetTimeString().c_str(), (int)(after_release.total_heap - before_release.total_heap));
+    ESP_LOGI(TAG, "%s @ReleaseBleResources：与初始状态相比总内存变化: %d字节", 
+             GetTimeString().c_str(), (int)(after_release.total_heap - initial_snapshot.total_heap));
+    
+    ESP_LOGI(TAG, "%s @ReleaseBleResources：BLE资源释放完成", GetTimeString().c_str());
     return true;
 }
 

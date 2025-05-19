@@ -4,6 +4,8 @@
 #include <string>
 #include <functional>
 #include <stdint.h>  // 新增，保证uint16_t等类型可用
+#include <atomic>    // 添加对std::atomic的支持
+#include <mutex>     // 添加对std::mutex的支持
 #include "host/ble_hs.h" // NimBLE 头文件
 #include "nimble/nimble_port.h"
 #include "host/ble_uuid.h"  // 确保ble_uuid_any_t定义可见
@@ -35,6 +37,13 @@ typedef enum {
 
 // BLE 设备名常量定义
 constexpr const char* kBleDeviceName = "DuDu-BLE";
+
+// BLE运行模式枚举，表示BLE模块当前的运行状态
+enum class BleOperationMode {
+    NORMAL,             // 正常运行模式，允许自动重连
+    SHUTTING_DOWN,      // 正在关闭模式，不允许自动重连
+    DISABLED            // 已禁用模式，所有BLE操作都被禁止
+};
 
 class BleConfig {
 public:
@@ -69,7 +78,7 @@ public:
     bool StartAdvertising(); // 修改返回类型为 bool
 
     // 停止 BLE 广播 (配网成功或不需要时调用)
-    void StopAdvertising();
+    bool StopAdvertising();
 
     // 发送 Wi-Fi 连接状态给手机
     void SendWifiStatus(wifi_config_status_t status);
@@ -79,6 +88,18 @@ public:
 
     // 设置开始连接 Wi-Fi 的回调函数
     void SetConnectWifiCallback(std::function<void()> cb);
+
+    // 设置BLE运行模式
+    void SetOperationMode(BleOperationMode mode);
+    
+    // 获取当前BLE运行模式
+    BleOperationMode GetOperationMode();
+    
+    // 检查是否允许自动重新广播
+    bool IsAutoAdvertisingAllowed();
+
+    // 强制重置BLE状态
+    void ForceReset();
 
     // --- 公开给静态回调函数访问的成员 ---
     // 用于存储接收到的 Wi-Fi 凭据
@@ -129,7 +150,7 @@ public:
      * 该函数用于配置并启动 BLE 设备的广播功能，使设备能够被其他设备发现。
      * 它设置广播参数和广播数据，然后开始广播操作。
      */
-    static void ble_advertise(void);
+    static bool ble_advertise(void);
     
     // 回调函数 - BLE开启同步
     /**
@@ -185,6 +206,11 @@ private:
         static volatile bool ble_host_task_running;  // 用于指示任务是否正在运行
         static volatile ble_task_state_t ble_host_task_state;   // 用于存储任务状态
 
+    // BLE运行模式，控制事件处理行为
+    static BleOperationMode ble_operation_mode_;
+    
+    // 互斥锁，保护状态转换
+    static std::mutex ble_state_mutex_;
 };
 
 // 声明外部存储回调函数（如果需要持久化绑定信息）
