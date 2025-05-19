@@ -91,7 +91,7 @@ struct MemorySnapshot {
 
 // 函数声明
 MemorySnapshot get_memory_snapshot();
-void log_memory_state(const char* tag, const char* stage, const MemorySnapshot& snapshot, int log_level = 3);
+void log_memory_state(const char* tag, const char* stage, const MemorySnapshot& snapshot, int log_level = 1);
 bool check_memory_health(const char* tag, const char* stage, 
                          size_t internal_threshold = 60000, 
                          size_t total_threshold = 100000);
