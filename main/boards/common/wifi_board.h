@@ -14,6 +14,17 @@ enum ble_wifi_reason_t { // 改名为 ble_wifi_reason_t
     BLE_WIFI_REASON_INIT_FAIL = 4,     // WiFi初始化失败
 };
 
+// 添加配网状态枚举
+enum class BleConfigState {
+    IDLE,                // 空闲状态
+    ADVERTISING,         // 正在广播
+    CONNECTED,           // 已连接
+    CREDENTIALS_RECEIVED,// 已接收凭据
+    CONNECTING_WIFI,     // 正在连接WiFi
+    SUCCESS,             // 配网成功
+    FAILED               // 配网失败
+};
+
 class WifiBoard : public Board {
 protected:
     bool wifi_config_mode_ = false;
@@ -23,7 +34,7 @@ protected:
     virtual std::string GetBoardJson() override;
 
     // 新增：BLE配网流程中的WiFi连接
-    void ConnectWifiByBle(const std::string& ssid, const std::string& password);
+    bool ConnectWifiByBle(const std::string& ssid, const std::string& password);
     
     // 新增：尝试连接已保存的WiFi网络
     bool TryConnectSavedWifi();
@@ -61,6 +72,10 @@ private:
     bool InitializeAndStartBleAdvertising();    // 初始化并开始BLE广播
     void UpdateUiForBleConfig();                // 更新UI以显示BLE配网状态
     bool StartWifiConfigTimeoutTask();          // 启动配网超时任务
+
+    BleConfigState ble_config_state_ = BleConfigState::IDLE;     // 新增：BLE配网状态
+    std::mutex ble_config_mutex_;    // 保护配网状态的互斥锁
+    bool should_connect_wifi_ = false; // 新增：标记是否应该连接WiFi
 
 public:
     virtual std::string GetBoardType() override;    // 新增：返回板卡类型

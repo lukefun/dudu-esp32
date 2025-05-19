@@ -102,65 +102,46 @@ bool WifiBoard::SetupBleCallbacks()
 
     // 1. 设置 WiFi 凭据接收回调
     ble_config.SetCredentialsReceivedCallback([this](const std::string &ssid, const std::string &password)
-                                              {
-        ESP_LOGI(TAG, "%s @SetupBleCallbacks.CredentialsReceivedCallback：收到 WiFi 凭据 - SSID: %s", GetTimeString().c_str(), ssid.c_str());
-        ble_ssid_ = ssid;
-        ble_password_ = password;
-        ESP_LOGI(TAG, "%s @SetupBleCallbacks.CredentialsReceivedCallback：WiFi 凭据已暂存", GetTimeString().c_str()); });
+    {
+        std::lock_guard<std::mutex> lock(ble_config_mutex_);
+        
+        ESP_LOGI(TAG, "%s @SetupBleCallbacks.CredentialsReceivedCallback：收到 WiFi 凭据 - SSID: %s", 
+                 GetTimeString().c_str(), ssid.c_str());
+        
+        // 只在ADVERTISING或CONNECTED状态接收凭据
+        if (ble_config_state_ == BleConfigState::ADVERTISING || 
+            ble_config_state_ == BleConfigState::CONNECTED) {
+            ble_ssid_ = ssid;
+            ble_password_ = password;
+            ble_config_state_ = BleConfigState::CREDENTIALS_RECEIVED;
+            ESP_LOGI(TAG, "%s @SetupBleCallbacks.CredentialsReceivedCallback：WiFi 凭据已暂存，状态更新为CREDENTIALS_RECEIVED", 
+                     GetTimeString().c_str());
+        } else {
+            ESP_LOGW(TAG, "%s @SetupBleCallbacks.CredentialsReceivedCallback：当前状态(%d)不适合接收凭据，已忽略", 
+                     GetTimeString().c_str(), static_cast<int>(ble_config_state_));
+        }
+    });
 
     // 2. 设置开始连接 WiFi 的回调
     ble_config.SetConnectWifiCallback([this]()
-                                      {
-        // 创建WdtGuard对象，构造函数中注册看门狗，析构函数中自动注销
-        WdtGuard wdt_guard; // RAII 风格的看门狗管理类
-
-        // 获取当前内存快照
-        MemorySnapshot snapshot = get_memory_snapshot();
-        log_memory_state(TAG, "@SetupBleCallbacks.ConnectWifiCallback：收到连接 WiFi 命令 - 前", snapshot);
-
-        BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTING);
-        esp_task_wdt_reset(); // 重置看门狗
-
-        if (ble_ssid_.empty() || ble_password_.empty()) {
-            ESP_LOGW(TAG, "@SetupBleCallbacks.ConnectWifiCallback：BLE配网凭据为空，无法连接");
-            BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_FAIL_SSID);
+    {
+        std::lock_guard<std::mutex> lock(ble_config_mutex_);
+        
+        // 只在CREDENTIALS_RECEIVED状态处理连接命令
+        if (ble_config_state_ != BleConfigState::CREDENTIALS_RECEIVED) {
+            ESP_LOGW(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：当前状态(%d)不是CREDENTIALS_RECEIVED，忽略连接命令", 
+                     GetTimeString().c_str(), static_cast<int>(ble_config_state_));
             return;
         }
-
-        BleConfig::GetInstance().StopAdvertising();
-        ESP_LOGI(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：已停止BLE广播，准备连接WiFi", GetTimeString().c_str());
-
-        esp_task_wdt_reset();    // 重置看门狗
-
-        bool wifi_ok = false;
-        try 
-        {
-            esp_task_wdt_reset();    // 重置看门狗
-
-            // 获取当前内存快照
-            snapshot = get_memory_snapshot();
-            log_memory_state(TAG, "@SetupBleCallbacks.ConnectWifiCallback：调用ConnectWifiByBle()连接WiFi - 前", snapshot);
-
-            ConnectWifiByBle(ble_ssid_, ble_password_);
-            esp_task_wdt_reset();    // 重置看门狗
-            wifi_ok = true;
-        } 
-        catch (const std::exception& e) 
-        {
-            ESP_LOGE(TAG, "@SetupBleCallbacks.ConnectWifiCallback：ConnectWifiByBle异常: %s", e.what());
-        } 
-        catch (...) 
-        {
-            ESP_LOGE(TAG, "@SetupBleCallbacks.ConnectWifiCallback：ConnectWifiByBle发生未知异常");
-        }
-
-        if (!wifi_ok) 
-        {
-            ESP_LOGW(TAG, "@SetupBleCallbacks.ConnectWifiCallback：ConnectWifiByBle返回失败，WiFi未连接");
-            BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_FAIL_SSID);
-        } });
-
-    ESP_LOGI(TAG, "%s @SetupBleCallbacks：BLE 回调设置完成", GetTimeString().c_str());
+        
+        // 更新状态为正在连接WiFi
+        ble_config_state_ = BleConfigState::CONNECTING_WIFI;
+        ESP_LOGI(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：状态更新为CONNECTING_WIFI", GetTimeString().c_str());
+        
+        // 设置标志让主循环处理WiFi连接
+        should_connect_wifi_ = true;
+        ESP_LOGI(TAG, "%s @SetupBleCallbacks.ConnectWifiCallback：已设置连接标志", GetTimeString().c_str());
+    });
 
     return true;
 }
@@ -314,11 +295,14 @@ bool WifiBoard::StartWifiConfigTimeoutTask()
 
 void WifiBoard::EnterWifiConfigMode()
 {
-    // 构造时自动注册看门狗，析构时自动注销，确保函数内长时间操作安全
-
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：进入 WiFi BLE 配网模式", GetTimeString().c_str());
 
     // --- 1. 准备阶段 ---
+    {
+        std::lock_guard<std::mutex> lock(ble_config_mutex_);
+        ble_config_state_ = BleConfigState::IDLE;
+    }
+    
     // 获取当前内存快照
     MemorySnapshot snapshot = get_memory_snapshot();
     
@@ -334,12 +318,10 @@ void WifiBoard::EnterWifiConfigMode()
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：设备状态已设置为 WiFi配网中", GetTimeString().c_str());
 
     // --- 2. 设置BLE回调 ---
-    // 这些回调函数会在收到SSID、密码或连接命令时被触发
     if (!SetupBleCallbacks())
     {
         ESP_LOGE(TAG, "@EnterWifiConfigMode：设置 BLE 回调函数失败");
-        application.Alert(Lang::Strings::ERROR, "BLE回调设置失败", "sad", Lang::Sounds::P3_ERR_PIN); // to-do：临时用 P3_ERR_PIN 是通用错误音
-        // 关键错误，可能需要重启或进入更深层次的错误状态
+        application.Alert(Lang::Strings::ERROR, "BLE回调设置失败", "sad", Lang::Sounds::P3_ERR_PIN);
         return;
     }
     esp_task_wdt_reset(); // 重置看门狗
@@ -349,9 +331,15 @@ void WifiBoard::EnterWifiConfigMode()
     {
         ESP_LOGE(TAG, "@EnterWifiConfigMode：初始化或启动 BLE 广播失败");
         application.Alert(Lang::Strings::ERROR, "BLE启动失败", "sad", Lang::Sounds::P3_ERR_PIN);
-        // 关键错误
         return;
     }
+    
+    {
+        std::lock_guard<std::mutex> lock(ble_config_mutex_);
+        ble_config_state_ = BleConfigState::ADVERTISING;
+        ESP_LOGI(TAG, "%s @EnterWifiConfigMode：状态更新为ADVERTISING", GetTimeString().c_str());
+    }
+    
     esp_task_wdt_reset(); // 重置看门狗
 
     // 记录BLE初始化后内存
@@ -367,89 +355,73 @@ void WifiBoard::EnterWifiConfigMode()
 
     // 启动第一个配网超时语音提示任务
     if (!StartWifiConfigTimeoutTask())
-    { // StartWifiConfigTimeoutTask内部会先清理旧句柄
+    {
         ESP_LOGE(TAG, "@EnterWifiConfigMode：启动初始配网超时任务失败！");
         application.Alert(Lang::Strings::ERROR, "超时监控启动失败", "sad", "");
-        // 此错误比较严重，可能需要设备重启或进入维护模式
         return;
     }
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：初始配网超时任务已启动，等待 WiFi 凭据...", GetTimeString().c_str());
     esp_task_wdt_reset(); // 重置看门狗
 
     // --- 5. 主等待循环 ---
-    // 此循环会一直运行，直到Wi-Fi配网成功，或者被其他外部事件中断（如物理按键强制退出）
-    const int check_interval_ms = 1000;                                                // 每秒检查一次是否有新的Wi-Fi凭据输入
-    int elapsed_ms_for_next_prompt = 0;                                                // 用于触发下一个超时语音提示的计时器
-    const int timeout_ms_for_next_prompt_period = config_timeout_minutes_ * 60 * 1000; // 超时周期，默认 3 分钟
+    const int check_interval_ms = 100;  // 缩短检查间隔，提高响应性
+    int elapsed_ms_for_next_prompt = 0;
+    const int timeout_ms_for_next_prompt_period = config_timeout_minutes_ * 60 * 1000;
+    bool should_connect_wifi = false;
 
     while (true)
     {
         esp_task_wdt_reset(); // 在循环的开始喂狗
-
-        // 检查是否已通过BLE接收到SSID和密码
-        // ble_ssid_ 和 ble_password_ 是成员变量，由GATT写入回调 (gatt_svr_chr_access) 填充
-        if (!ble_ssid_.empty() && !ble_password_.empty())
+        
+        // 使用互斥锁保护状态检查和更新
         {
-            ESP_LOGI(TAG, "%s @EnterWifiConfigMode：检测到已接收WiFi凭据 - SSID: '%s'", GetTimeString().c_str(), ble_ssid_.c_str());
-
-            // 尝试使用接收到的凭据连接Wi-Fi
-            ESP_LOGI(TAG, "%s @EnterWifiConfigMode：尝试使用接收到的凭据，用ConnectWifiByBle()连接Wi-Fi", GetTimeString().c_str());
-            ConnectWifiByBle(ble_ssid_, ble_password_);
-
-            // 检查 ConnectWifiByBle 后的设备状态，以判断是否连接成功
-            if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle)
-            {
-                // Wi-Fi连接成功，应用状态已切换到Idle
-                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi已成功连接，退出配网模式。", GetTimeString().c_str());
-
-                // 确保超时任务已被正确停止和清理
-                // ConnectWifiByBle 成功时应该已经删除了超时任务
-                if (wifi_timeout_task_handle_ != nullptr)
-                {
-                    ESP_LOGW(TAG, "%s @EnterWifiConfigMode：WiFi连接成功，但超时任务句柄仍存在，尝试删除。", GetTimeString().c_str());
-                    vTaskDelete(wifi_timeout_task_handle_);
-                    wifi_timeout_task_handle_ = nullptr;
-                }
-                break; // 跳出 while(true) 循环，结束配网模式
+            std::lock_guard<std::mutex> lock(ble_config_mutex_);
+            
+            // 如果标志已设置，复制到局部变量并重置
+            if (should_connect_wifi_) {
+                should_connect_wifi = true;
+                should_connect_wifi_ = false;
+                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：检测到连接标志已设置，准备连接WiFi", 
+                         GetTimeString().c_str());
             }
-            else
-            {
-                // Wi-Fi连接失败，ConnectWifiByBle 内部会处理BLE重置和UI提示
-                // 需要为下一次尝试重置状态
-                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接失败，清除临时凭据，继续等待。", GetTimeString().c_str());
-                ble_ssid_.clear();     // 清除已接收的SSID
-                ble_password_.clear(); // 清除已接收的密码
-
-                // 由于Wi-Fi连接失败，BLE服务可能已重启，需要重新启动超时监控
-                ResetTimeoutTaskHandle(); // 清理旧的超时任务句柄
-                if (!StartWifiConfigTimeoutTask())
-                { // 启动新的超时任务
-                    ESP_LOGE(TAG, "@EnterWifiConfigMode：WiFi连接失败后，无法重新启动超时任务！");
-                    // 此处可以添加更强的错误处理，例如重启设备
-                }
-                elapsed_ms_for_next_prompt = 0; // 重置内部超时计时器，开始新的等待周期
+        }
+        
+        // 在互斥锁外执行耗时操作
+        if (should_connect_wifi) {
+            ESP_LOGI(TAG, "%s @EnterWifiConfigMode：开始连接WiFi - SSID: %s", 
+                     GetTimeString().c_str(), ble_ssid_.c_str());
+            
+            // 执行WiFi连接
+            bool connect_result = ConnectWifiByBle(ble_ssid_, ble_password_);
+            
+            // 更新状态
+            std::lock_guard<std::mutex> lock(ble_config_mutex_);
+            if (connect_result) {
+                ble_config_state_ = BleConfigState::SUCCESS;
+                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接成功，状态更新为SUCCESS", 
+                         GetTimeString().c_str());
+            } else {
+                ble_config_state_ = BleConfigState::FAILED;
+                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接失败，状态更新为FAILED", 
+                         GetTimeString().c_str());
             }
         }
 
         // 检查是否到达下一个语音提示的超时时间
         if (elapsed_ms_for_next_prompt >= timeout_ms_for_next_prompt_period)
         {
-            ESP_LOGW(TAG, "%s @EnterWifiConfigMode：内部等待凭据超时 (%d 分钟)，将触发下一次语音提示。", GetTimeString().c_str(), config_timeout_minutes_);
-            ResetTimeoutTaskHandle(); // 清理可能已结束的或旧的超时任务句柄
-            if (!StartWifiConfigTimeoutTask())
-            { // 启动下一次的超时语音提示任务
+            ESP_LOGW(TAG, "%s @EnterWifiConfigMode：内部等待凭据超时 (%d 分钟)，将触发下一次语音提示。", 
+                     GetTimeString().c_str(), config_timeout_minutes_);
+            ResetTimeoutTaskHandle();
+            if (!StartWifiConfigTimeoutTask()) {
                 ESP_LOGE(TAG, "@EnterWifiConfigMode：在内部超时后，无法重新启动超时任务！");
-                // 此处可以添加错误处理
             }
-            elapsed_ms_for_next_prompt = 0; // 重置计时器，为下一个超时周期计时
+            elapsed_ms_for_next_prompt = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(check_interval_ms));    // 短暂等待，避免CPU空转
-        elapsed_ms_for_next_prompt += check_interval_ms; // 累加计时
-    } // 结束 while(true) 循环
-
-    ESP_LOGI(TAG, "%s @EnterWifiConfigMode：已成功退出配网模式循环。", GetTimeString().c_str());
-    // 配网成功后，此函数返回，StartNetwork 函数会继续执行
+        vTaskDelay(pdMS_TO_TICKS(check_interval_ms));
+        elapsed_ms_for_next_prompt += check_interval_ms;
+    }
 } // End of EnterWifiConfigMode()
 
 // 配网超时任务
@@ -488,7 +460,7 @@ static void WifiConfigTimeoutTask(void *pvParameters)
         Application::GetInstance().Alert(
             Lang::Strings::BLE_CONFIG_MODE,
             "配网超时，请重试",
-            "",
+            "sad",
             Lang::Sounds::P3_WIFICONFIG); 
         ESP_LOGI(TAG, "@WifiConfigTimeoutTask (%s)：【执行调度内容】Application::Alert 已调用。", GetTimeString().c_str());
     });
@@ -503,7 +475,7 @@ static void WifiConfigTimeoutTask(void *pvParameters)
 }
 
 
-// <<<<<<<<<<<<<<<<<<<<<< BLE配网流程中的WiFi连接实现 >>>>>>>>>>>>>>>>>>>>>>
+// <<<<<<<<<<<<<<<<<<<<<< BLE配网流程中的WiFi连接实现 【Begain】>>>>>>>>>>>>>>>>>>>>>>
 /*
 分为6个功能明确的小函数：
 SaveWifiCredentials: 保存WiFi凭据到NVS和认证管理器
@@ -536,10 +508,12 @@ void WifiBoard::SaveWifiCredentials(const std::string &ssid, const std::string &
 bool WifiBoard::ReleaseBleResources(const MemorySnapshot &initial_snapshot) {
     ESP_LOGI(TAG, "%s @ReleaseBleResources：开始释放BLE资源", GetTimeString().c_str());
     
-    // 去初始化BLE模块
+    // 去初始化BLE模块并重置看门狗，确保BLE模块已完全停止运行。
     esp_task_wdt_reset();
-    BleConfig::GetInstance().Deinitialize();
+    BleConfig::GetInstance().Deinitialize();    
     esp_task_wdt_reset();
+
+    vTaskDelay(pdMS_TO_TICKS(100)); // 等待BLE资源彻底释放
     
     // 去初始化后，检查内存状态
     MemorySnapshot deinitialize_after_snapshot = get_memory_snapshot();
@@ -549,16 +523,15 @@ bool WifiBoard::ReleaseBleResources(const MemorySnapshot &initial_snapshot) {
     MemorySnapshot diff = initial_snapshot.GetDifference(deinitialize_after_snapshot);
     ESP_LOGI(TAG, "去初始化BLE后: 内部RAM: %.2fKB, 总堆: %.2fKB", 
              diff.internal_ram / 1024.0f, diff.total_heap / 1024.0f);
-    
-    vTaskDelay(pdMS_TO_TICKS(100)); // 等待BLE资源彻底释放
+
+    // 循环检查BLE是否完全释放
+    bool ble_fully_released = false;    // 标记BLE是否完全释放
+    int ble_release_retry = 0;          // 重试计数器
+    const int ble_release_max_retry = 5;    // 最大重试次数
+    int ble_force_deinit_count = 0;         // 强制去初始化计数器
+    int last_free_sram = 0;                  // 上次内存值
     
     // 循环检查BLE是否完全释放
-    bool ble_fully_released = false;
-    int ble_release_retry = 0;
-    const int ble_release_max_retry = 5;
-    int ble_force_deinit_count = 0;
-    int last_free_sram = 0;
-    
     for (; ble_release_retry < ble_release_max_retry; ++ble_release_retry) {
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_task_wdt_reset();
@@ -761,396 +734,55 @@ void WifiBoard::HandleWifiConnectFailure() {
 }
 
 // 主函数：BLE配网流程中的WiFi连接实现
-void WifiBoard::ConnectWifiByBle(const std::string &ssid, const std::string &password)
+bool WifiBoard::ConnectWifiByBle(const std::string &ssid, const std::string &password)
 {
-    // 构造时自动注册看门狗，析构时自动注销，确保函数内长时间操作安全
-    WdtGuard wdt_guard;
-    
     ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE配网流程 - 准备连接WiFi SSID: %s", 
              GetTimeString().c_str(), ssid.c_str());
-
+    
     // 检查当前内存状态
     MemorySnapshot connectWifi_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "ConnectWifiByBle：连接WiFi前，初始内存状态", connectWifi_snapshot);
     esp_task_wdt_reset();
 
     // 1. 保存WiFi凭据
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle # SaveWifiCredentials：保存WiFi凭据到NVS", GetTimeString().c_str());
     SaveWifiCredentials(ssid, password);
     
     // 2. 释放BLE资源
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle # ReleaseBleResources：释放BLE资源", GetTimeString().c_str());
     ReleaseBleResources(connectWifi_snapshot);
     
     // 3. 启动WiFi并等待连接
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle # StartWifiAndWaitForConnection：启动WiFi并等待连接", GetTimeString().c_str());
     bool connected = StartWifiAndWaitForConnection();
     
-    // 4. 处理连接结果
     if (connected) {
-        HandleWifiConnectSuccess();
+        ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功", GetTimeString().c_str());
+        
+        // 更新设备状态
+        Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+        
+        // 清理超时任务
+        if (wifi_timeout_task_handle_ != nullptr) {
+            vTaskDelete(wifi_timeout_task_handle_);
+            wifi_timeout_task_handle_ = nullptr;
+        }
+        
+        return true;
     } else {
-        HandleWifiConnectFailure();
+        ESP_LOGW(TAG, "%s @ConnectWifiByBle：WiFi连接失败", GetTimeString().c_str());
+        
+        // 发送失败状态到BLE客户端
+        BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_FAIL);
+        
+        return false;
     }
 }
 
 
-// <<<<<<<<<<<<<<<<<<<<<< BLE配网流程中的WiFi连接实现 >>>>>>>>>>>>>>>>>>>>>>
+// <<<<<<<<<<<<<<<<<<<<<< BLE配网流程中的WiFi连接实现 【END】>>>>>>>>>>>>>>>>>>>>>>
 
 
-
-
-// // 新增：BLE配网流程中的WiFi连接实现
-// void WifiBoard::ConnectWifiByBle(const std::string &ssid, const std::string &password)
-// {
-//     // 构造时自动注册看门狗，析构时自动注销，确保函数内长时间操作安全
-//     ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE配网流程 - 准备连接WiFi SSID: %s", GetTimeString().c_str(), ssid.c_str());
-
-//     // 检查当前内存状态
-//     MemorySnapshot connectWifi_snapshot = get_memory_snapshot();
-//     log_memory_state(TAG, "ConnectWifiByBle：连接WiFi前，初始内存状态", connectWifi_snapshot);
-//     esp_task_wdt_reset(); // 重置看门狗
-
-//     // 先保存WiFi凭据到NVS
-//     auto &ssid_manager = SsidManager::GetInstance();
-//     ssid_manager.AddSsid(ssid, password);
-//     ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi凭据已保存到NVS", GetTimeString().c_str());
-
-//     // 短暂延时，让BLE任务有时间处理完成当前操作
-//     vTaskDelay(pdMS_TO_TICKS(100));
-//     esp_task_wdt_reset(); // 重置看门狗
-
-//     // 添加认证信息
-//     auto &wifi_station = WifiStation::GetInstance();
-//     wifi_station.AddAuth(std::string(ssid), std::string(password));
-//     ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi认证信息已添加", GetTimeString().c_str());
-
-
-//     // 启动WiFi连接，前准备
-
-//     // <<<<<<<<<<<<<<<<<<<<<< BLE 去初始化 >>>>>>>>>>>>>>>>>>>>>>
-//     esp_task_wdt_reset(); // 重置看门狗
-//     BleConfig::GetInstance().Deinitialize(); // 去初始化 BLE 模块
-//     esp_task_wdt_reset(); // 重置看门狗
-
-
-
-
-
-
-
-
-
-
-
-//     // 等待BLE资源彻底释放
-
-
-
-
-
-
-
-
-//     // 去初始化 BLE 后，检查内存状态
-//     MemorySnapshot deinitialize_after_snapshot = get_memory_snapshot();
-//     log_memory_state(TAG, "ConnectWifiByBle：去初始化 BLE 后", deinitialize_after_snapshot);
-
-//      // 计算并输出 去初始化 BLE 后 内存差异
-//      MemorySnapshot diff = connectWifi_snapshot.GetDifference(deinitialize_after_snapshot);
-//      ESP_LOGI(TAG, "去初始化 BLE 后: 内部RAM: %.2fKB, 总堆: %.2fKB", diff.internal_ram / 1024.0f, diff.total_heap / 1024.0f);
-
-
-//     vTaskDelay(pdMS_TO_TICKS(100)); // 等待BLE资源彻底释放
-
-//     // 启动WiFi 连接之前，必须确认 BLE 已停止，并且释放了内存，否则等待！
-
-//     // int ble_restart_count = 0;
-//     bool ble_fully_released = false;
-
-//     // ====== 新增BLE彻底释放与多次检测机制 ======
-//     int ble_release_retry = 0;              // 重试次数
-//     const int ble_release_max_retry = 5;    // 最大重试次数
-//     int ble_force_deinit_count = 0;          // 强制释放次数
-//     int last_free_sram = 0;                 // 上次可用内存
-
-//     /*
-//     // 这个循环会一直运行，直到BLE完全停止并释放了内存，或者达到最大重试次数
-//     for (; ble_release_retry < ble_release_max_retry; ++ble_release_retry)
-//     {
-//         vTaskDelay(pdMS_TO_TICKS(100));
-//         esp_task_wdt_reset();
-
-//         bool adv = BleConfig::GetInstance().IsAdvertising();    // 是否正在广播
-//         bool running = BleConfig::ble_host_task_running;        // 是否正在运行
-
-//         MemorySnapshot snapshot = get_memory_snapshot();
-//         log_memory_state(TAG, "@ConnectWifiByBle：等待 BLE 彻底释放内存", snapshot);
-
-//         // int free_sram_check = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-//         // ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE状态：Advertising=%d, Running=%d, 当前可用内存: %d 字节，重试次数: %d", GetTimeString().c_str(), adv, running, free_sram_check, ble_release_retry);
-        
-//         if (!adv && !running)   // 如果BLE已停止
-//         {
-//             ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE已停止，准备检查内存状态", GetTimeString().c_str());
-//             // 计算并输出 去初始化 BLE 后 内存差异
-//             MemorySnapshot diff = connectWifi_snapshot.GetDifference(snapshot);
-//             ESP_LOGI(TAG, "去初始化 BLE 后: 内部RAM: %.2fKB, 总堆: %.2fKB", diff.internal_ram / 1024.0f, diff.total_heap / 1024.0f);
-
-//             if (free_sram_check > 60000)
-//             {
-//                 ble_fully_released = true;  // 标记BLE已完全停止并释放了内存
-//                 break;
-//             }
-//         }
-//         else
-//         {
-//             ESP_LOGW(TAG, "%s @ConnectWifiByBle：BLE未完全停止，重试中...（%d/%d）", GetTimeString().c_str(), ble_release_retry + 1, ble_release_max_retry);
-            
-//             // 重试次数达到一定值时，尝试强制清理BLE资源
-//             if ((ble_release_retry + 1) % 2 == 0)
-//             {
-//                 ESP_LOGW(TAG, "%s @ConnectWifiByBle：尝试强制清理BLE资源（第%d次）", GetTimeString().c_str(), ++ble_force_deinit_count);
-                
-//                 // 检查BLE任务状态并尝试强制结束
-//                 TaskHandle_t ble_task = BleConfig::GetBleHostTaskHandle();
-//                 if (ble_task != NULL) {
-//                     ESP_LOGW(TAG, "%s @ConnectWifiByBle：BLE任务仍在运行，尝试强制删除", GetTimeString().c_str());
-//                     vTaskDelete(ble_task);
-//                     vTaskDelay(pdMS_TO_TICKS(100));
-//                 }
-                
-//                 // 强制执行内存整理
-//                 heap_caps_check_integrity_all(true);
-//                 vTaskDelay(pdMS_TO_TICKS(100));
-//             }
-//         }
-
-
-//         heap_caps_check_integrity_all(true);    // 强制执行内存整理
-//         vTaskDelay(pdMS_TO_TICKS(50));
-        
-//         // 获取当前内部RAM可用大小
-//         int free_sram_check = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        
-//         // 检查内存是否异常下降
-//         if (last_free_sram != 0 && free_sram_check < last_free_sram - 4096)
-//         {
-//             ESP_LOGW(TAG, "%s @ConnectWifiByBle：检测到内存异常下降，上次: %d, 本次: %d", 
-//                     GetTimeString().c_str(), last_free_sram, free_sram_check);
-//         }
-
-//         // 更新上次内存值
-//         last_free_sram = free_sram_check;
-//     }
-//     */
-
-//     // 这个循环会一直运行，直到BLE完全停止并释放了内存，或者达到最大重试次数
-//     for (; ble_release_retry < ble_release_max_retry; ++ble_release_retry)
-//     {
-//         vTaskDelay(pdMS_TO_TICKS(100));
-//         esp_task_wdt_reset();
-
-//         // 获取当前内部RAM可用大小
-//         int free_sram_check = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        
-//         bool adv = BleConfig::GetInstance().IsAdvertising();    // 是否正在广播
-//         bool running = BleConfig::ble_host_task_running;        // 是否正在运行
-
-//         MemorySnapshot snapshot = get_memory_snapshot();
-//         log_memory_state(TAG, "@ConnectWifiByBle：等待 BLE 彻底释放内存", snapshot);
-        
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE状态：Advertising=%d, Running=%d, 当前可用内存: %d 字节，重试次数: %d", 
-//                 GetTimeString().c_str(), adv, running, free_sram_check, ble_release_retry);
-        
-//         // 检查内存是否异常下降
-//         if (last_free_sram != 0 && free_sram_check < last_free_sram - 4096)
-//         {
-//             ESP_LOGW(TAG, "%s @ConnectWifiByBle：检测到内存异常下降，上次: %d, 本次: %d", 
-//                     GetTimeString().c_str(), last_free_sram, free_sram_check);
-//         }
-        
-//         // 更新上次内存值
-//         last_free_sram = free_sram_check;
-        
-//         if (!adv && !running && free_sram_check > 60000)   // 如果BLE已停止且内存足够
-//         {
-//             ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE已停止且内存充足，准备启动WiFi", GetTimeString().c_str());
-//             // 计算并输出 去初始化 BLE 后 内存差异
-//             MemorySnapshot diff = connectWifi_snapshot.GetDifference(snapshot);
-//             ESP_LOGI(TAG, "去初始化 BLE 后: 内部RAM: %.2fKB, 总堆: %.2fKB", diff.internal_ram / 1024.0f, diff.total_heap / 1024.0f);
-            
-//             ble_fully_released = true;  // 标记BLE已完全停止并释放了内存
-//             break;
-//         }
-//         else if (!adv && !running)  // BLE已停止但内存不足
-//         {
-//             ESP_LOGW(TAG, "%s @ConnectWifiByBle：BLE已停止但内存仍不足(%d字节)，执行内存整理", 
-//                     GetTimeString().c_str(), free_sram_check);
-//             heap_caps_check_integrity_all(true);  // 强制执行内存整理
-//             vTaskDelay(pdMS_TO_TICKS(100));       // 等待内存整理完成
-//         }
-//         else  // BLE未完全停止
-//         {
-//             ESP_LOGW(TAG, "%s @ConnectWifiByBle：BLE未完全停止，重试中...（%d/%d）", 
-//                     GetTimeString().c_str(), ble_release_retry + 1, ble_release_max_retry);
-            
-//             // 重试次数达到一定值时，尝试强制清理BLE资源
-//             if ((ble_release_retry + 1) % 2 == 0)
-//             {
-//                 ESP_LOGW(TAG, "%s @ConnectWifiByBle：尝试强制清理BLE资源（第%d次）", 
-//                         GetTimeString().c_str(), ++ble_force_deinit_count);
-                
-//                 // 检查BLE任务状态并尝试强制结束
-//                 TaskHandle_t ble_task = BleConfig::GetBleHostTaskHandle();
-//                 if (ble_task != NULL) {
-//                     ESP_LOGW(TAG, "%s @ConnectWifiByBle：BLE任务仍在运行，尝试强制删除", 
-//                             GetTimeString().c_str());
-//                     vTaskDelete(ble_task);
-//                     vTaskDelay(pdMS_TO_TICKS(100));
-//                 }
-                
-//                 // 强制执行内存整理
-//                 heap_caps_check_integrity_all(true);
-//                 vTaskDelay(pdMS_TO_TICKS(100));
-//             }
-//         }
-//     }
-
-
-//     // 如果BLE未完全停止，且重试次数达到最大值，采取紧急措施
-//     if (!ble_fully_released)
-//     {
-//         ESP_LOGE(TAG, "%s @ConnectWifiByBle：BLE资源释放超时，采取紧急措施", GetTimeString().c_str());
-        
-//         // 记录诊断信息
-//         MemorySnapshot current = get_memory_snapshot();
-//         log_memory_state(TAG, "BLE释放超时时内存状态", current);
-        
-//         // 检查BLE任务状态
-//         TaskHandle_t ble_task = BleConfig::GetBleHostTaskHandle();
-//         if (ble_task != NULL) {
-//             // 获取任务信息
-//             TaskStatus_t task_status;
-//             vTaskGetInfo(ble_task, &task_status, pdTRUE, eInvalid);
-//             ESP_LOGE(TAG, "BLE任务状态: 优先级=%u, 状态=%d, 高水位=%u", 
-//                 (unsigned int)task_status.uxCurrentPriority, 
-//                 (int)task_status.eCurrentState, 
-//                 (unsigned int)task_status.usStackHighWaterMark);
-            
-//             // 强制删除任务
-//             ESP_LOGE(TAG, "%s @ConnectWifiByBle：强制终止BLE任务", GetTimeString().c_str());
-//             vTaskDelete(ble_task);
-//         }
-        
-//         // 强制执行内存整理
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：执行强制内存整理", GetTimeString().c_str());
-//         heap_caps_check_integrity_all(true);
-        
-//         // 短暂延时让系统稳定
-//         vTaskDelay(pdMS_TO_TICKS(300));
-        
-//         // 记录措施后的内存状态
-//         MemorySnapshot after = get_memory_snapshot();
-//         log_memory_state(TAG, "紧急措施后内存状态", after);
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：紧急措施后内存增加: %d 字节", 
-//                 GetTimeString().c_str(), (int)(after.internal_ram - current.internal_ram));
-//     }
-//     else
-//     {
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE资源已彻底释放，准备启动WiFi", GetTimeString().c_str());
-//     }
-
-
-
-
-//     // ====== 结束BLE彻底释放与多次检测机制 ======
-
-//     // 启动WiFi连接
-//     MemorySnapshot startWiFi_before_snapshot = get_memory_snapshot(); // 获取当前内存状态
-//     log_memory_state(TAG, "ConnectWifiByBle：启动 WiFi 前，初始内存状态", startWiFi_before_snapshot);
-//     esp_task_wdt_reset();           // 重置看门狗
-
-//     wifi_station.Start();           // 启动WiFi，内存密集型操作
-//     vTaskDelay(pdMS_TO_TICKS(500)); // 短暂延时，让WiFi任务有时间初始化
-
-//     esp_task_wdt_reset();           // 重置看门狗
-//     MemorySnapshot startWiFi_after_snapshot = get_memory_snapshot(); // 获取当前内存状态
-//     log_memory_state(TAG, "ConnectWifiByBle：启动 WiFi 后，当前内存状态", startWiFi_after_snapshot);
-
-//     // 等待连接结果，使用更长的超时时间
-//     ESP_LOGI(TAG, "%s @ConnectWifiByBle：等待WiFi连接结果，超时时间: 8秒", GetTimeString().c_str());
-//     bool connected = wifi_station.WaitForConnected(8000); // 等待连接结果，超时时间为8秒
-//     esp_task_wdt_reset();                                 // 重置看门狗
-//     ESP_LOGI(TAG, "%s @ConnectWifiByBle：重置任务看门狗（3），防止WiFi连接过程中触发看门狗超时", GetTimeString().c_str());
-
-//     if (connected)
-//     {
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功，IP: %s", GetTimeString().c_str(), wifi_station.GetIpAddress().c_str());
-//         // 发送连接成功状态
-//         esp_task_wdt_reset(); // 重置看门狗
-//         BleConfig::GetInstance().SendWifiStatus(WIFI_STATUS_CONNECTED);
-
-//         // 短暂延时确保状态发送成功
-//         esp_task_wdt_reset();
-//         vTaskDelay(pdMS_TO_TICKS(500));
-//         esp_task_wdt_reset();
-
-//         // 删除超时任务
-//         if (wifi_timeout_task_handle_ != nullptr)
-//         {
-//             ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功，删除配网超时任务", GetTimeString().c_str());
-//             vTaskDelete(wifi_timeout_task_handle_);
-//             wifi_timeout_task_handle_ = nullptr;
-//         }
-
-//         // BLE模块已在连接前去初始化，无需再次Deinitialize
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE模块已去初始化", GetTimeString().c_str());
-//         // 设置设备状态为空闲
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：设置设备状态为空闲", GetTimeString().c_str());
-//         Application::GetInstance().SetDeviceState(kDeviceStateIdle); // 使用正确的状态枚举
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：配网成功完成，进入正常工作状态", GetTimeString().c_str());
-//     }
-//     else
-//     {
-//         ESP_LOGW(TAG, "%s @ConnectWifiByBle：WiFi连接失败，重新进入配网状态！", GetTimeString().c_str());
-//         // 停止WiFi连接
-//         esp_task_wdt_reset();
-//         wifi_station.Stop();
-//         wifi_config_status_t status = WIFI_STATUS_FAIL_CONN;
-//         if (!wifi_station.IsConnected())
-//         {
-//             status = WIFI_STATUS_FAIL_CONN;
-//         }
-//         // 重新初始化BLE并恢复广播
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接失败，重新初始化BLE并恢复广播", GetTimeString().c_str());
-//         BleConfig::GetInstance().Initialize();
-//         vTaskDelay(pdMS_TO_TICKS(200));
-//         BleConfig::GetInstance().StartAdvertising();
-//         vTaskDelay(pdMS_TO_TICKS(300));
-//         ESP_LOGW(TAG, "%s @ConnectWifiByBle：发送WiFi连接失败状态: %d", GetTimeString().c_str(), status);
-//         BleConfig::GetInstance().SendWifiStatus(status);
-//         esp_task_wdt_reset();
-//         vTaskDelay(pdMS_TO_TICKS(500));
-//         auto display = Board::GetInstance().GetDisplay();
-//         if (display)
-//         {
-//             std::string error_msg;
-//             switch (status)
-//             {
-//             case WIFI_STATUS_FAIL_AP_NOT_FOUND:
-//                 error_msg = "找不到WiFi热点";
-//                 break;
-//             case WIFI_STATUS_FAIL_AUTH:
-//                 error_msg = "WiFi密码错误";
-//                 break;
-//             default:
-//                 error_msg = "WiFi连接失败";
-//                 break;
-//             }
-//             display->ShowNotification(error_msg.c_str(), 3000);
-//         }
-//         ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接失败，恢复设备状态为配网中", GetTimeString().c_str());
-//         Application::GetInstance().SetDeviceState(kDeviceStateWifiConfiguring);
-//     }
-// }
 
 // 尝试连接已保存的 WiFi 网络
 bool WifiBoard::TryConnectSavedWifi()
