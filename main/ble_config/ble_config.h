@@ -3,7 +3,7 @@
 
 #include <string>
 #include <functional>
-#include <stdint.h>  // 新增，保证uint16_t等类型可用
+#include <stdint.h>  // 保证uint16_t等类型可用
 #include <atomic>    // 添加对std::atomic的支持
 #include <mutex>     // 添加对std::mutex的支持
 #include "host/ble_hs.h" // NimBLE 头文件
@@ -11,12 +11,24 @@
 #include "host/ble_uuid.h"  // 确保ble_uuid_any_t定义可见
 #include "host/ble_gap.h"   // 确保ble_gap_event_listener定义完整
 #include "ble_task_state.h" // 包含任务状态定义
+#include "freertos/event_groups.h" // 添加事件组支持
+#include "esp_event.h"      // 添加ESP事件系统支持
 
 // 定义我们之前设计的 UUID
 #define WIFI_CONFIG_SERVICE_UUID      "CDB7950D-73F1-4D4D-8E47-C090502DBD63"
 #define SSID_CHAR_UUID                "CDB7950D-73F1-4D4D-8E47-C090502DBD64"
 #define PASSWORD_CHAR_UUID            "CDB7950D-73F1-4D4D-8E47-C090502DBD65"
 #define CONTROL_STATUS_CHAR_UUID      "CDB7950D-73F1-4D4D-8E47-C090502DBD66"
+
+// 定义BLE事件基础和事件ID
+ESP_EVENT_DECLARE_BASE(BLE_EVENT_BASE);
+enum {
+    BLE_EVENT_SHUTDOWN,
+    BLE_EVENT_MAX
+};
+
+// 定义事件组位
+#define BLE_SHUTDOWN_BIT (1 << 0)
 
 // 定义配网状态码
 typedef enum {
@@ -211,6 +223,9 @@ private:
     
     // 互斥锁，保护状态转换
     static std::mutex ble_state_mutex_;
+    
+    // 全局事件循环句柄
+    static esp_event_loop_handle_t ble_event_loop;
 };
 
 // 声明外部存储回调函数（如果需要持久化绑定信息）
