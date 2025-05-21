@@ -692,27 +692,14 @@ void BleConfig::ble_host_task(void *param) {
     BleConfig::ble_host_task_running = true;
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务状态设置为RUNNING", GetTimeString().c_str());
     
-    // 循环计数器
-    int loop_counter = 0;
-    
-    // 创建事件组，用于任务间通信
-    EventGroupHandle_t ble_event_group = xEventGroupCreate();
-    if (ble_event_group == NULL) {
-        ESP_LOGE(TAG, "%s @ble_host_task: 创建事件组失败，任务退出", GetTimeString().c_str());
-        BleConfig::ble_host_task_state = BLE_TASK_STOPPED;
-        ble_host_task_handle = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
-    
     // 注册任务退出通知处理函数
     esp_err_t err = ESP_OK;
     if (ble_event_loop != nullptr) {
         err = esp_event_handler_register_with(ble_event_loop, BLE_EVENT_BASE, BLE_EVENT_SHUTDOWN, 
             [](void* handler_arg, esp_event_base_t base, int32_t id, void* event_data) {
-                EventGroupHandle_t event_group = (EventGroupHandle_t)handler_arg;
-                xEventGroupSetBits(event_group, BLE_SHUTDOWN_BIT);
-            }, ble_event_group);
+                ESP_LOGI(TAG, "%s @ble_host_task: 收到关闭事件，准备退出任务", GetTimeString().c_str());
+                BleConfig::ble_host_task_running = false;
+            }, nullptr);
         ESP_LOGI(TAG, "%s @ble_host_task: 注册任务退出通知处理函数", GetTimeString().c_str());
     } else {
         ESP_LOGE(TAG, "%s @ble_host_task: 事件循环句柄为空，无法注册事件处理函数", GetTimeString().c_str());
@@ -724,34 +711,10 @@ void BleConfig::ble_host_task(void *param) {
     
     // BLE主循环
     while (BleConfig::ble_host_task_running) {
-        // 每10次循环记录一次调试日志
-        if (++loop_counter % 10 == 0) {
-            ESP_LOGD(TAG, "%s @ble_host_task: BLE主循环仍在运行，迭代次数: %d", GetTimeString().c_str(), loop_counter);
-        }
-
-        // 非阻塞方式检查是否有退出请求
-        EventBits_t bits = xEventGroupGetBits(ble_event_group);
-        if (bits & BLE_SHUTDOWN_BIT) {
-            ESP_LOGI(TAG, "%s @ble_host_task: 收到退出请求，准备退出循环", GetTimeString().c_str());
-            BleConfig::ble_host_task_running = false;
-            break;
-        }
-
-        // 记录进入nimble_port_run前的时间戳
-        int64_t start_time = esp_timer_get_time();
-        
-        // 使用nimble_port_run的非阻塞替代方案
+        // 运行NimBLE协议栈的事件处理循环，处理BLE事件，包括连接、断开、数据传输等
+        // 这是一个阻塞调用，会一直运行直到有事件发生或任务被停止
         nimble_port_run();
         
-        // 记录处理事件的时间
-        int64_t end_time = esp_timer_get_time();
-        int64_t process_time_us = end_time - start_time;
-        
-        if (process_time_us > 100000) { // 记录超过100ms的处理时间
-            ESP_LOGW(TAG, "%s @ble_host_task: BLE事件处理耗时较长: %lld us", 
-                     GetTimeString().c_str(), process_time_us);
-        }
-
         // 短暂延时，避免CPU占用过高
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -760,12 +723,6 @@ void BleConfig::ble_host_task(void *param) {
     if (ble_event_loop != nullptr) {
         esp_event_handler_unregister_with(ble_event_loop, BLE_EVENT_BASE, BLE_EVENT_SHUTDOWN, NULL);
     }
-    
-    // 删除事件组
-    if (ble_event_group != NULL) {
-        vEventGroupDelete(ble_event_group);
-    }
-
     // 主动释放NimBLE资源
     ESP_LOGI(TAG, "%s @ble_host_task: 开始资源清理", GetTimeString().c_str());
 
@@ -792,7 +749,7 @@ void BleConfig::ble_host_task(void *param) {
         ble_deinit_completed.store(true);
         ESP_LOGI(TAG, "%s @ble_host_task: ble_deinit_completed 设置为 true", GetTimeString().c_str());
 
-            // 设置任务状态为已停止
+        // 设置任务状态为已停止
         BleConfig::ble_host_task_state = BLE_TASK_STOPPED;
         ESP_LOGI(TAG, "%s @ble_host_task: 任务状态已设置为STOPPED", GetTimeString().c_str());
 
