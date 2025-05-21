@@ -1,52 +1,66 @@
-#include "ble_config.h"
-#include "esp_log.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "host/ble_hs.h"
-#include "host/util/util.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
-#include "nvs_flash.h"
-#include "esp_task_wdt.h"  // 添加任务看门狗头文件
-#include "freertos/FreeRTOS.h"  // FreeRTOS头文件
-#include "freertos/timers.h"    // FreeRTOS定时器头文件
-#include "ble_config.h"
-#include "esp_log.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "host/ble_hs.h"
-#include "host/util/util.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
-#include "nvs_flash.h"
-#include "esp_task_wdt.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/timers.h"
-#include "freertos/event_groups.h"
-#include "esp_event.h"
-#include "../system_info.h"
-#include <string.h>
-#include <stdlib.h>
-#include <assert.h>
-#include <sys/time.h>
-#include <mutex>
-#include <atomic>
+// 项目特定头文件
+#include "ble_config.h"         // 包含BLE(Bluetooth Low Energy)的配置信息，像UUID、连接参数等都在其中
+#include "../system_info.h"     // 提供系统相关信息，例如设备ID、版本号等内容
+// C++标准库头文件
+#include <atomic>               // 提供原子操作支持，可用于多线程环境下的无锁编程
+#include <mutex>                // 提供互斥锁机制，能保证线程安全
+// C标准库头文件（在C++里常通过<cname>头文件使用，例如<cstring>、<cstdlib>）
+#include <string.h>             // 包含C风格字符串处理函数，像strcmp、strcpy等
+#include <stdlib.h>             // 提供通用工具函数，如内存分配(malloc、free)、数值转换等
+#include <assert.h>             // 提供断言机制，用于在运行时检查程序的正确性，有助于调试过程
+#include <sys/time.h>           // 包含时间相关函数，例如gettimeofday可用于获取当前时间和日期
+// FreeRTOS头文件
+#include "freertos/FreeRTOS.h"      // FreeRTOS的核心头文件，定义了任务、队列等基本概念
+#include "freertos/timers.h"        // 提供软件定时器功能
+#include "freertos/event_groups.h"  // 支持事件组，可用于任务间的同步
+// ESP-IDF头文件
+#include "esp_log.h"             // 提供日志功能，方便调试输出
+#include "esp_event.h"           // 提供事件循环机制
+#include "nvs_flash.h"           // 用于非易失性存储(NVS)，可保存系统配置信息
+#include "esp_task_wdt.h"        // 提供任务看门狗定时器，能防止任务卡死
+// NimBLE协议栈头文件
+#include "nimble/nimble_port.h"             // NimBLE蓝牙协议栈的平台相关接口
+#include "nimble/nimble_port_freertos.h"    // FreeRTOS与NimBLE的适配层
+#include "host/ble_hs.h"                    // NimBLE主机层核心API
+#include "host/util/util.h"                 // NimBLE使用的辅助工具函数
+#include "services/gap/ble_svc_gap.h"       // 包含GAP(Generic Access Profile)服务，负责设备发现和连接
+#include "services/gatt/ble_svc_gatt.h"     // 包含GATT(Generic Attribute Profile)服务，负责属性数据交换
 
 static const char* TAG = "BLE_CONFIG";
 
+// 在BleConfig类中添加一个标志
+std::atomic<bool> ble_deinit_completed{false};
+
 // 定义静态成员变量
-TaskHandle_t BleConfig::ble_host_task_handle = nullptr;
-volatile bool BleConfig::ble_host_task_running = true;
-volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;
-std::mutex BleConfig::ble_state_mutex_;
-BleOperationMode BleConfig::ble_operation_mode_ = BleOperationMode::NORMAL;
-esp_event_loop_handle_t BleConfig::ble_event_loop = nullptr;
+TaskHandle_t BleConfig::ble_host_task_handle = nullptr;                             // 初始化为nullptr，表示任务句柄尚未分配
+volatile bool BleConfig::ble_host_task_running = true;                              // 初始化为true，表示BLE主机任务正在运行
+volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;           // 初始化为BLE_TASK_INIT状态
+std::mutex BleConfig::ble_state_mutex_;                                             // 用于保护状态转换的互斥锁  
+BleOperationMode BleConfig::ble_operation_mode_ = BleOperationMode::NORMAL;         // 初始化为NORMAL模式
+esp_event_loop_handle_t BleConfig::ble_event_loop = nullptr;                        // 用于存储事件循环句柄
 
 // 定义BLE事件基础
-ESP_EVENT_DEFINE_BASE(BLE_EVENT_BASE);
+ESP_EVENT_DEFINE_BASE(BLE_EVENT_BASE);      // 定义BLE事件基础
 
-static BleConfig* g_ble_config_instance = nullptr;
-extern "C" void ble_store_config_init(void);
+// 添加构造函数和析构函数的实现
+BleConfig::BleConfig() {
+    // 构造函数初始化代码
+    ESP_LOGI(TAG, "%s @BleConfig: 构造函数被调用", GetTimeString().c_str());
+    status_val_handle_ = 0;
+}
+
+BleConfig::~BleConfig() {
+    // 析构函数清理代码
+    ESP_LOGI(TAG, "%s @~BleConfig: 析构函数被调用", GetTimeString().c_str());
+}
+
+BleConfig& BleConfig::GetInstance() {
+    static BleConfig instance;
+    return instance;
+}
+
+static BleConfig* g_ble_config_instance = nullptr;      // 静态实例指针
+extern "C" void ble_store_config_init(void);            // 声明外部C函数,用于初始化BLE存储配置
 
 static ble_uuid128_t gatt_svr_svc_wifi_config_uuid;
 static ble_uuid128_t gatt_svr_chr_ssid_uuid;
@@ -327,7 +341,7 @@ void BleConfig::Initialize() {
     log_memory_state(TAG, "ble_store_config_init()前", get_memory_snapshot());
     esp_task_wdt_reset();
     
-    ble_store_config_init();
+    ble_store_config_init();     // BLE存储初始化，如果需要，可以在这里添加，但目前未使用
     
     esp_task_wdt_reset();
     log_memory_state(TAG, "ble_store_config_init()后", get_memory_snapshot());
@@ -699,6 +713,7 @@ void BleConfig::ble_host_task(void *param) {
                 EventGroupHandle_t event_group = (EventGroupHandle_t)handler_arg;
                 xEventGroupSetBits(event_group, BLE_SHUTDOWN_BIT);
             }, ble_event_group);
+        ESP_LOGI(TAG, "%s @ble_host_task: 注册任务退出通知处理函数", GetTimeString().c_str());
     } else {
         ESP_LOGE(TAG, "%s @ble_host_task: 事件循环句柄为空，无法注册事件处理函数", GetTimeString().c_str());
     }
@@ -738,7 +753,7 @@ void BleConfig::ble_host_task(void *param) {
         }
 
         // 短暂延时，避免CPU占用过高
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
     
     // 注销事件处理函数
@@ -753,30 +768,44 @@ void BleConfig::ble_host_task(void *param) {
 
     // 主动释放NimBLE资源
     ESP_LOGI(TAG, "%s @ble_host_task: 开始资源清理", GetTimeString().c_str());
-    
-    // 记录释放前的内存状态
-    MemorySnapshot before_deinit = get_memory_snapshot();
-    log_memory_state(TAG, "ble_host_task: 资源清理前", before_deinit);
 
-    // 停止NimBLE端口事件处理
-    ESP_LOGI(TAG, "%s @ble_host_task: 调用 nimble_port_stop()", GetTimeString().c_str());
-    nimble_port_stop();
-    ESP_LOGI(TAG, "%s @ble_host_task: nimble_port_stop() 调用完成", GetTimeString().c_str());
+    // 修改退出处理部分
+    if (ble_host_task_state == BLE_TASK_STOPPING) {
+        ESP_LOGW(TAG, "%s @ble_host_task: BLE主机任务正在停止，等待资源清理完成", GetTimeString().c_str());
+        ESP_LOGI(TAG, "%s @ble_host_task: 开始资源清理 --- 前", GetTimeString().c_str());
 
-    // 去初始化BLE主机栈
-    ESP_LOGI(TAG, "%s @ble_host_task: 调用 ble_hs_deinit()", GetTimeString().c_str());
-    ble_hs_deinit();
-    ESP_LOGI(TAG, "%s @ble_host_task: ble_hs_deinit() 调用完成", GetTimeString().c_str());
-    
-    // 记录释放后的内存状态
-    MemorySnapshot after_deinit = get_memory_snapshot();
-    log_memory_state(TAG, "ble_host_task: 资源清理后", after_deinit);
-    ESP_LOGI(TAG, "%s @ble_host_task: 资源清理释放: %d字节", 
-             GetTimeString().c_str(), (int)(after_deinit.total_heap - before_deinit.total_heap));
-    
-    // 设置任务状态为已停止
-    BleConfig::ble_host_task_state = BLE_TASK_STOPPED;
-    ESP_LOGI(TAG, "%s @ble_host_task: 任务状态已设置为STOPPED", GetTimeString().c_str());
+        // 记录释放前的内存状态
+        MemorySnapshot before_deinit = get_memory_snapshot();
+        log_memory_state(TAG, "ble_host_task: 资源清理 --- 前", before_deinit);
+
+        // 只在这里调用一次nimble_port_stop
+        ESP_LOGI(TAG, "%s @ble_host_task: 调用 nimble_port_stop()", GetTimeString().c_str());
+        nimble_port_stop();
+        ESP_LOGI(TAG, "@ble_host_task: nimble_port_stop() 调用完成");
+        
+        // 只在这里调用一次ble_hs_deinit
+        ESP_LOGI(TAG, "@ble_host_task: 调用 ble_hs_deinit()");
+        ble_hs_deinit();
+        ESP_LOGI(TAG, "@ble_host_task: ble_hs_deinit() 调用完成");
+        
+        // 设置完成标志
+        ble_deinit_completed.store(true);
+        ESP_LOGI(TAG, "%s @ble_host_task: ble_deinit_completed 设置为 true", GetTimeString().c_str());
+
+            // 设置任务状态为已停止
+        BleConfig::ble_host_task_state = BLE_TASK_STOPPED;
+        ESP_LOGI(TAG, "%s @ble_host_task: 任务状态已设置为STOPPED", GetTimeString().c_str());
+
+        // 记录释放后的内存状态
+        MemorySnapshot after_deinit = get_memory_snapshot();
+        log_memory_state(TAG, "ble_host_task: 资源清理 --- 后", after_deinit);
+
+        // 记录资源清理释放的内存量
+        int memory_released = (int)(after_deinit.total_heap - before_deinit.total_heap);
+        ESP_LOGI(TAG, "%s @ble_host_task: BLE 去初始化，资源清理释放了 %d 字节内存", GetTimeString().c_str(), memory_released);
+    }
+
+
 
     // 清空全局任务句柄
     ble_host_task_handle = NULL;
