@@ -33,7 +33,7 @@ std::atomic<bool> ble_deinit_completed{false};
 
 // 定义静态成员变量
 TaskHandle_t BleConfig::ble_host_task_handle = nullptr;                             // 初始化为nullptr，表示任务句柄尚未分配
-volatile bool BleConfig::ble_host_task_running = true;                              // 初始化为true，表示BLE主机任务正在运行
+// volatile bool BleConfig::ble_host_task_running = true;                              // 初始化为true，表示BLE主机任务正在运行
 volatile ble_task_state_t BleConfig::ble_host_task_state = BLE_TASK_INIT;           // 初始化为BLE_TASK_INIT状态
 std::mutex BleConfig::ble_state_mutex_;                                             // 用于保护状态转换的互斥锁  
 BleOperationMode BleConfig::ble_operation_mode_ = BleOperationMode::NORMAL;         // 初始化为NORMAL模式
@@ -646,8 +646,8 @@ bool BleConfig::StopAdvertising() {
     ESP_LOGI(TAG, "%s @StopAdvertising: 尝试停止BLE广播...", GetTimeString().c_str());
     
     // 即使在关闭模式下也允许停止广播
-    int rc = ble_gap_adv_stop();
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
+    int rc = ble_gap_adv_stop();    // 停止广播，成功返回0，失败返回错误码
+    if (rc != 0 && rc != BLE_HS_EALREADY) { // 错误码2表示已经没有广播在运行
         ESP_LOGE(TAG, "%s @StopAdvertising: 停止广播失败，错误码: %d", GetTimeString().c_str(), rc);
         return false;
     }
@@ -689,16 +689,15 @@ void BleConfig::ble_host_task(void *param) {
 
     // 设置任务状态为运行中
     BleConfig::ble_host_task_state = BLE_TASK_RUNNING;
-    BleConfig::ble_host_task_running = true;
     ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务状态设置为RUNNING", GetTimeString().c_str());
     
-    // 注册任务退出通知处理函数
+    // 【注册】任务退出通知处理函数
     esp_err_t err = ESP_OK;
     if (ble_event_loop != nullptr) {
-        err = esp_event_handler_register_with(ble_event_loop, BLE_EVENT_BASE, BLE_EVENT_SHUTDOWN, 
+        err = esp_event_handler_register_with(ble_event_loop, BLE_EVENT_BASE, BLE_EVENT_SHUTDOWN,
             [](void* handler_arg, esp_event_base_t base, int32_t id, void* event_data) {
-                ESP_LOGI(TAG, "%s @ble_host_task: 收到关闭事件，准备退出任务", GetTimeString().c_str());
-                BleConfig::ble_host_task_running = false;
+                ESP_LOGI(TAG, "%s @ble_host_task: 收到关闭事件，调用 nimble_port_stop()", GetTimeString().c_str());
+                nimble_port_stop(); // 停止NimBLE端口，这将导致nimble_port_run()返回
             }, nullptr);
         ESP_LOGI(TAG, "%s @ble_host_task: 注册任务退出通知处理函数", GetTimeString().c_str());
     } else {
@@ -709,64 +708,26 @@ void BleConfig::ble_host_task(void *param) {
         ESP_LOGE(TAG, "%s @ble_host_task: 注册事件处理函数失败: %d", GetTimeString().c_str(), err);
     }
     
-    // BLE主循环
-    while (BleConfig::ble_host_task_running) {
-        // 运行NimBLE协议栈的事件处理循环，处理BLE事件，包括连接、断开、数据传输等
-        // 这是一个阻塞调用，会一直运行直到有事件发生或任务被停止
-        nimble_port_run();
-        
-        // 短暂延时，避免CPU占用过高
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
+    // BLE主循环，处理BLE事件，包括连接、断开、数据传输等
+    // nimble_port_run() 是阻塞调用，直到 nimble_port_stop() 被调用
+    ESP_LOGI(TAG, "%s @ble_host_task: 进入 nimble_port_run() 循环", GetTimeString().c_str());
+    nimble_port_run();
+    ESP_LOGI(TAG, "%s @ble_host_task: nimble_port_run() 返回，开始清理", GetTimeString().c_str());
     
-    // 注销事件处理函数
+    // 【注销】事件处理函数
     if (ble_event_loop != nullptr) {
+        // 注销事件处理函数，确保不会再收到关闭事件，防止重复调用，防止内存泄漏
         esp_event_handler_unregister_with(ble_event_loop, BLE_EVENT_BASE, BLE_EVENT_SHUTDOWN, NULL);
     }
-    // 主动释放NimBLE资源
-    ESP_LOGI(TAG, "%s @ble_host_task: 开始资源清理", GetTimeString().c_str());
-
-    // 修改退出处理部分
-    if (ble_host_task_state == BLE_TASK_STOPPING) {
-        ESP_LOGW(TAG, "%s @ble_host_task: BLE主机任务正在停止，等待资源清理完成", GetTimeString().c_str());
-        ESP_LOGI(TAG, "%s @ble_host_task: 开始资源清理 --- 前", GetTimeString().c_str());
-
-        // 记录释放前的内存状态
-        MemorySnapshot before_deinit = get_memory_snapshot();
-        log_memory_state(TAG, "ble_host_task: 资源清理 --- 前", before_deinit);
-
-        // 只在这里调用一次nimble_port_stop
-        ESP_LOGI(TAG, "%s @ble_host_task: 调用 nimble_port_stop()", GetTimeString().c_str());
-        nimble_port_stop();
-        ESP_LOGI(TAG, "@ble_host_task: nimble_port_stop() 调用完成");
-        
-        // 只在这里调用一次ble_hs_deinit
-        ESP_LOGI(TAG, "@ble_host_task: 调用 ble_hs_deinit()");
-        ble_hs_deinit();
-        ESP_LOGI(TAG, "@ble_host_task: ble_hs_deinit() 调用完成");
-        
-        // 设置完成标志
-        ble_deinit_completed.store(true);
-        ESP_LOGI(TAG, "%s @ble_host_task: ble_deinit_completed 设置为 true", GetTimeString().c_str());
-
-        // 设置任务状态为已停止
-        BleConfig::ble_host_task_state = BLE_TASK_STOPPED;
-        ESP_LOGI(TAG, "%s @ble_host_task: 任务状态已设置为STOPPED", GetTimeString().c_str());
-
-        // 记录释放后的内存状态
-        MemorySnapshot after_deinit = get_memory_snapshot();
-        log_memory_state(TAG, "ble_host_task: 资源清理 --- 后", after_deinit);
-
-        // 记录资源清理释放的内存量
-        int memory_released = (int)(after_deinit.total_heap - before_deinit.total_heap);
-        ESP_LOGI(TAG, "%s @ble_host_task: BLE 去初始化，资源清理释放了 %d 字节内存", GetTimeString().c_str(), memory_released);
-    }
-
-
-
-    // 清空全局任务句柄
-    ble_host_task_handle = NULL;
     
+    // 设置完成标志，ble_hs_deinit()和nimble_port_deinit()将在Deinitialize中调用
+    ble_deinit_completed.store(true);
+    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务准备退出，已设置完成标志，释放NimBLE资源在Deinitialize中完成✅", GetTimeString().c_str());
+
+
+    // // 清空全局任务句柄
+    // ble_host_task_handle = NULL;
+
     // 任务自行退出
     ESP_LOGI(TAG, "%s @ble_host_task: 任务正常退出", GetTimeString().c_str());
     vTaskDelete(NULL);
@@ -900,20 +861,21 @@ int BleConfig::ble_gap_event(struct ble_gap_event *event, void *arg) {
 void BleConfig::Deinitialize() {
     ESP_LOGI(TAG, "%s @Deinitialize: 开始完整去初始化BLE模块...", GetTimeString().c_str());
     
-    // 设置运行模式为SHUTTING_DOWN
+    // 第一步：设置运行模式为SHUTTING_DOWN，以防止新的BLE活动，如广播、连接等
+    ESP_LOGI(TAG, "%s @Deinitialize: 第一步 - 设置运行模式为SHUTTING_DOWN", GetTimeString().c_str());
     SetOperationMode(BleOperationMode::SHUTTING_DOWN);
     
     // 记录初始内存状态
     MemorySnapshot initial_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "Deinitialize", initial_snapshot);
     
-    // 步骤1: 停止所有BLE活动
-    ESP_LOGI(TAG, "%s @Deinitialize: 步骤1 - 停止所有BLE活动", GetTimeString().c_str());
+    // 第二步：停止所有BLE活动，如广播、连接等
+    ESP_LOGI(TAG, "%s @Deinitialize: 第二步 - 停止所有BLE活动", GetTimeString().c_str());
     
-    // 先断开所有BLE连接
+    // 1. 断开所有BLE连接
     ESP_LOGI(TAG, "%s @Deinitialize: 开始断开所有BLE连接", GetTimeString().c_str());
     int disconnect_count = 0;
-    for (int i = 0; i < CONFIG_BT_NIMBLE_MAX_CONNECTIONS; i++) {
+    for (int i = 0; i < CONFIG_BT_NIMBLE_MAX_CONNECTIONS; i++) {    // 遍历所有可能的连接句柄
         int rc = ble_gap_terminate(i, BLE_ERR_REM_USER_CONN_TERM);  // 强制断开连接，错误码为用户终止
         if (rc == 0) {
             disconnect_count++;
@@ -922,155 +884,92 @@ void BleConfig::Deinitialize() {
     ESP_LOGI(TAG, "%s @Deinitialize: 已断开 %d 个连接", GetTimeString().c_str(), disconnect_count);
     vTaskDelay(pdMS_TO_TICKS(100));  // 等待一段时间，确保连接断开完成
     
-    // 停止广播
+    // 2. 停止BLE广播
+    ESP_LOGI(TAG, "%s @Deinitialize: 停止BLE广播", GetTimeString().c_str());
     StopAdvertising();
     vTaskDelay(pdMS_TO_TICKS(100));  // 等待一段时间，确保广播已停止
-    ESP_LOGI(TAG, "%s @Deinitialize: 广播已停止", GetTimeString().c_str());
 
-    // 步骤2: 发送关闭事件给BLE主机任务
-    ESP_LOGI(TAG, "%s @Deinitialize: 步骤2 - 发送关闭事件给BLE主机任务", GetTimeString().c_str());
+    // 第三步：发送关闭事件给BLE主机任务
+    ESP_LOGI(TAG, "%s @Deinitialize: 第三步 - 发送关闭事件给BLE主机任务", GetTimeString().c_str());
     
-    // 检查任务是否存在
-    if (ble_host_task_handle != NULL) {
+    // 检查任务是否存在，如果存在则发送关闭事件
+    if (ble_host_task_handle != NULL) { // 检查任务句柄是否为空
         // 发送关闭事件
-        esp_err_t err = ESP_OK;
-        if (ble_event_loop != nullptr) {
-            err = esp_event_post_to(ble_event_loop, BLE_EVENT_BASE, BLE_EVENT_SHUTDOWN, NULL, 0, pdMS_TO_TICKS(100));
+        esp_err_t err = ESP_OK; // 初始化错误码
+        if (ble_event_loop != nullptr) { // 检查事件循环句柄是否为空
+            // 发送关闭事件
+            err = esp_event_post_to(ble_event_loop, BLE_EVENT_BASE, BLE_EVENT_SHUTDOWN, NULL, 0, pdMS_TO_TICKS(100));    // 发送关闭事件
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "%s @Deinitialize: 发送关闭事件失败: %d", GetTimeString().c_str(), err);
+            } else {
+                ESP_LOGI(TAG, "%s @Deinitialize: 已发送关闭事件给BLE主机任务", GetTimeString().c_str());
+            }
         } else {
-            ESP_LOGE(TAG, "%s @Deinitialize: 事件循环句柄为空，无法发送关闭事件", GetTimeString().c_str());
-            // 直接设置运行标志为false
-            ble_host_task_running = false;
+            ESP_LOGE(TAG, "%s @Deinitialize: 异常需要警觉：⚠️ 事件循环句柄为空，无法发送关闭事件", GetTimeString().c_str());
         }
-        
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "%s @Deinitialize: 发送关闭事件失败: %d", GetTimeString().c_str(), err);
-            // 直接设置运行标志为false
-            ble_host_task_running = false;
-        } else {
-            ESP_LOGI(TAG, "%s @Deinitialize: 已发送关闭事件给BLE主机任务", GetTimeString().c_str());
+    }
+    
+    // 设置任务状态为正在停止，以确保任务不会意外地重新启动，但不会立即退出，而是等待任务退出并完成清理
+    ble_host_task_state = BLE_TASK_STOPPING;
+    ESP_LOGI(TAG, "%s @Deinitialize: 任务状态已设置为STOPPING", GetTimeString().c_str());
+    
+    // 第四步：完成清理，带超时机制
+    if (ble_deinit_completed.load()) 
+    {
+        // 去初始化NimBLE端口层和主机栈
+        ESP_LOGI(TAG, "%s @Deinitialize: 步骤4 - 去初始化NimBLE端口层和主机栈", GetTimeString().c_str());
+
+        // 1. 先去初始化NimBLE端口
+        ESP_LOGI(TAG, "%s @Deinitialize: 1. 调用 nimble_port_deinit()", GetTimeString().c_str());
+        int rc = nimble_port_deinit();
+        if (rc != 0 && rc != BLE_HS_EALREADY)
+        {
+            ESP_LOGE(TAG, "%s @Deinitialize: nimble_port_deinit() 失败: %d", GetTimeString().c_str(), rc);
         }
-        
-        // 设置任务状态为正在停止
-        ble_host_task_state = BLE_TASK_STOPPING;
-        ESP_LOGI(TAG, "%s @Deinitialize: 任务状态已设置为STOPPING", GetTimeString().c_str());
-        
-        // 步骤3: 等待任务退出，带超时机制
-        ESP_LOGI(TAG, "%s @Deinitialize: 步骤3 - 等待BLE主机任务退出", GetTimeString().c_str());
-        const TickType_t xMaxWaitTicks = pdMS_TO_TICKS(3000);   // 设置 3 秒超时
-        TickType_t xStartTicks = xTaskGetTickCount();           // 记录开始时间
-        
-        int wait_count = 0;  // 等待计数器
-        bool task_exited_normally = false; // 标志任务是否正常退出
-        
-        while (ble_host_task_state != BLE_TASK_STOPPED) {
-            vTaskDelay(pdMS_TO_TICKS(10));  // 短暂延时
-            wait_count++;
-            
-            // 每100ms输出一次日志
-            if (wait_count % 10 == 0) {
-                int elapsed_ms = (int)((xTaskGetTickCount() - xStartTicks) * portTICK_PERIOD_MS);
-                ESP_LOGI(TAG, "%s @Deinitialize: 等待任务退出中... (已等待 %d ms, 最大 %d ms, ble_host_task_state: %d)", 
-                         GetTimeString().c_str(), elapsed_ms, (int)(xMaxWaitTicks * portTICK_PERIOD_MS), ble_host_task_state);
-                
-                // 检查任务状态
-                if (ble_host_task_handle != NULL) {
-                    eTaskState task_state_freertos = eTaskGetState(ble_host_task_handle);
-                    ESP_LOGI(TAG, "%s @Deinitialize: FreeRTOS任务状态: %d", GetTimeString().c_str(), task_state_freertos);
-                }
-            }
-            
-            // 检查是否超时
-            if ((xTaskGetTickCount() - xStartTicks) > xMaxWaitTicks) {
-                ESP_LOGW(TAG, "%s @Deinitialize: 等待任务退出超时. 尝试强制结束...", GetTimeString().c_str());
-                
-                if (ble_host_task_handle != NULL) {
-                    // 强制停止NimBLE端口事件处理
-                    ESP_LOGI(TAG, "%s @Deinitialize: 调用 nimble_port_stop() 强制停止事件处理", GetTimeString().c_str());
-                    nimble_port_stop();
-                    
-                    // 再等待一小段时间
-                    vTaskDelay(pdMS_TO_TICKS(500));
-                    
-                    // 如果任务仍未退出，强制删除
-                    if (ble_host_task_handle != NULL) {
-                        ESP_LOGE(TAG, "%s @Deinitialize: 任务仍未退出，强制删除", GetTimeString().c_str());
-                        vTaskDelete(ble_host_task_handle);
-                        ble_host_task_handle = NULL;
-                        ble_host_task_state = BLE_TASK_STOPPED;
-                        task_exited_normally = false;
-                    }
-                } else {
-                    ESP_LOGW(TAG, "%s @Deinitialize: 任务句柄为NULL，但状态未设置为STOPPED. 强制设置为STOPPED.", 
-                             GetTimeString().c_str());
-                    ble_host_task_state = BLE_TASK_STOPPED;
-                    task_exited_normally = false;
-                }
-                break;
-            }
-            
-            // 检查任务是否在此轮循环中停止
-            if (ble_host_task_state == BLE_TASK_STOPPED) {
-                task_exited_normally = true;
-                break;
-            }
+        else
+        {
+            ESP_LOGI(TAG, "%s @Deinitialize: nimble_port_deinit() 成功", GetTimeString().c_str());
         }
 
-        if (task_exited_normally) {
-            ESP_LOGI(TAG, "%s @Deinitialize: BLE主机任务已正常退出", GetTimeString().c_str());
-        } else {
-            ESP_LOGW(TAG, "%s @Deinitialize: BLE主机任务未能正常退出或被强制结束", GetTimeString().c_str());
-        }
-    } else {
-        ESP_LOGI(TAG, "%s @Deinitialize: BLE主机任务不存在，无需等待退出", GetTimeString().c_str());
-    }
-    
-    // 记录任务退出后的内存状态
-    MemorySnapshot after_task = get_memory_snapshot();
-    log_memory_state(TAG, "Deinitialize: BLE主机任务退出后内存状态", after_task);
-    ESP_LOGI(TAG, "%s @Deinitialize: 内存变化: %d字节", 
-             GetTimeString().c_str(), (int)(after_task.total_heap - initial_snapshot.total_heap));
+        // 2. 等待nimble_port_deinit完成清理
+        ESP_LOGI(TAG, "%s @Deinitialize: 2. 等待nimble_port_deinit()完成清理", GetTimeString().c_str());
+        vTaskDelay(pdMS_TO_TICKS(5000));  // 设置 5 秒，给完成清理留足时间
 
-    // 步骤4: 确保NimBLE资源完全释放
-    ESP_LOGI(TAG, "%s @Deinitialize: 步骤4 - 确保NimBLE资源完全释放", GetTimeString().c_str());
-    
-    // 确保NimBLE端口已停止
-    ESP_LOGI(TAG, "%s @Deinitialize: 确保调用 nimble_port_stop()", GetTimeString().c_str());
-    nimble_port_stop();
-    
-    // 确保BLE主机栈已去初始化
-    ESP_LOGI(TAG, "%s @Deinitialize: 确保调用 ble_hs_deinit()", GetTimeString().c_str());
-    ble_hs_deinit();
-    
-    // 去初始化NimBLE端口
-    ESP_LOGI(TAG, "%s @Deinitialize: 调用 nimble_port_deinit()", GetTimeString().c_str());
-    int rc = nimble_port_deinit();
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
-        ESP_LOGE(TAG, "%s @Deinitialize: nimble_port_deinit() 失败: %d", GetTimeString().c_str(), rc);
-    } else {
-        ESP_LOGI(TAG, "%s @Deinitialize: nimble_port_deinit() 成功", GetTimeString().c_str());
-    }
-    
-    // 销毁事件循环
-    if (ble_event_loop != nullptr) {
-        esp_err_t err = esp_event_loop_delete(ble_event_loop);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "%s @Deinitialize: 删除事件循环失败: %d", GetTimeString().c_str(), err);
-        } else {
-            ESP_LOGI(TAG, "%s @Deinitialize: 事件循环已删除", GetTimeString().c_str());
-            ble_event_loop = nullptr;
+        // 对与 Nimble 相关的端口进行去初始化操作 5 秒后的内存状态
+        MemorySnapshot nimble_port_deinit_snapshot = get_memory_snapshot();
+        log_memory_state(TAG, "Deinitialize: 对与 Nimble 相关的端口进行去初始化操作 5 秒后的内存状态", nimble_port_deinit_snapshot);
+
+        // 2. 再去初始化主机栈
+        ESP_LOGI(TAG, "%s @Deinitialize: 调用 ble_hs_deinit()", GetTimeString().c_str());
+        // ble_hs_deinit();     // 调用主机栈去初始化
+
+        // 清空全局任务句柄
+        ble_host_task_handle = NULL;
+
+        // 销毁事件循环
+        if (ble_event_loop != nullptr)
+        {
+            esp_err_t err = esp_event_loop_delete(ble_event_loop);
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "%s @Deinitialize: 删除事件循环失败: %d", GetTimeString().c_str(), err);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "%s @Deinitialize: 事件循环已删除", GetTimeString().c_str());
+                ble_event_loop = nullptr;
+            }
         }
     }
-    
+
     // 记录最终内存状态
     MemorySnapshot final_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "Deinitialize: 完成时最终内存状态", final_snapshot);
-    ESP_LOGI(TAG, "%s @Deinitialize: Deinitialize总释放: %d字节", 
-             GetTimeString().c_str(), (int)(final_snapshot.total_heap - initial_snapshot.total_heap));
-    
+    ESP_LOGI(TAG, "%s @Deinitialize: BLE 去初始化，资源清理释放了: %d字节", GetTimeString().c_str(), (int)(final_snapshot.total_heap - initial_snapshot.total_heap));
+
     // 清空全局实例指针
-    g_ble_config_instance = nullptr;
-    ESP_LOGI(TAG, "%s @Deinitialize: 已清空全局实例指针", GetTimeString().c_str());
-    
+    ESP_LOGI(TAG, "%s @Deinitialize: 清空全局实例指针", GetTimeString().c_str());
+    g_ble_config_instance = nullptr; 
     ESP_LOGI(TAG, "%s @Deinitialize: BLE模块去初始化完成", GetTimeString().c_str());
 }
 
