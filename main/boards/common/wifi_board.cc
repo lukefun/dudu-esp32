@@ -100,7 +100,7 @@ bool WifiBoard::SetupBleCallbacks()
     ESP_LOGI(TAG, "%s @SetupBleCallbacks：设置 BLE 回调函数", GetTimeString().c_str());
     auto &ble_config = BleConfig::GetInstance();
 
-    // 1. 设置 WiFi 凭据接收回调
+    // 1. 设置 WiFi 凭据接收回调，确保在 ADVERTISING 或 CONNECTED 状态下接收凭据，并更新状态
     ble_config.SetCredentialsReceivedCallback([this](const std::string &ssid, const std::string &password)
     {
         std::lock_guard<std::mutex> lock(ble_config_mutex_);
@@ -110,10 +110,11 @@ bool WifiBoard::SetupBleCallbacks()
         
         // 只在ADVERTISING或CONNECTED状态接收凭据
         if (ble_config_state_ == BleConfigState::ADVERTISING || 
-            ble_config_state_ == BleConfigState::CONNECTED) {
+            ble_config_state_ == BleConfigState::CONNECTED) 
+        {
             ble_ssid_ = ssid;
             ble_password_ = password;
-            ble_config_state_ = BleConfigState::CREDENTIALS_RECEIVED;
+            ble_config_state_ = BleConfigState::CREDENTIALS_RECEIVED;    // 更新状态为凭据已接收
             ESP_LOGI(TAG, "%s @SetupBleCallbacks.CredentialsReceivedCallback：WiFi 凭据已暂存，状态更新为CREDENTIALS_RECEIVED", 
                      GetTimeString().c_str());
         } else {
@@ -146,32 +147,14 @@ bool WifiBoard::SetupBleCallbacks()
     return true;
 }
 
+// 初始化并启动 BLE 广播
 bool WifiBoard::InitializeAndStartBleAdvertising()
 {
     ESP_LOGI(TAG, "%s @InitializeAndStartBleAdvertising：初始化并启动 BLE 广播", GetTimeString().c_str());
     auto &ble_config = BleConfig::GetInstance(); // 获取 ble_config 实例
-    // auto& application = Application::GetInstance();    // 获取 application 实例 (已注释掉，因为后续代码未使用)
 
     // 重置看门狗，防止初始化过程中触发超时
     esp_task_wdt_reset();
-
-    // 检查内存并采取保守策略：如果内存不足，先进行堆检查
-    MemorySnapshot memory_snapshot = get_memory_snapshot();
-    log_memory_state(TAG, "InitializeAndStartBleAdvertising：初始化前", memory_snapshot);
-
-    if (memory_snapshot.internal_ram < 60000)
-    {
-        ESP_LOGW(TAG, "%s @InitializeAndStartBleAdvertising：内存较低 (%d字节)，采用保守策略", GetTimeString().c_str(), (int)memory_snapshot.internal_ram);
-
-        esp_task_wdt_reset();                // 重置看门狗，防止堆检查过程中触发超时
-        heap_caps_check_integrity_all(true); // 进行堆检查
-        // 当设置为 true 时，如果该函数检测到任何堆损坏 (Heap Corruption)，它会 立即调用 abort() 函数，
-        // 直接让程序中止执行 。它不会返回错误代码让您的程序去判断和处理，而是直接停止。
-        // 这是为了确保在内存不足的情况下，程序不会继续执行可能导致不可预测的后果的代码。
-        esp_task_wdt_reset(); // 重置看门狗
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_task_wdt_reset(); // 重置看门狗
-    }
 
     // 初始化 BLE
     // 获取当前内存快照
@@ -179,15 +162,18 @@ bool WifiBoard::InitializeAndStartBleAdvertising()
     log_memory_state(TAG, "InitializeAndStartBleAdvertising：初始化 BLE 前", snapshot);
 
     esp_task_wdt_reset();    // 重置看门狗，BLE初始化前
-    ble_config.Initialize(); // 初始化 BLE - 这是一个耗时操作
+    ble_config.Initialize(); // 初始化 BLE - 这是一个耗时操作(3694 - 2724 = 970 mms)
     esp_task_wdt_reset();    // 重置看门狗，BLE初始化后
 
     snapshot = get_memory_snapshot();
     log_memory_state(TAG, "InitializeAndStartBleAdvertising：初始化 BLE 后", snapshot);
 
-    esp_task_wdt_reset();           // 重置看门狗，延迟前
-    vTaskDelay(pdMS_TO_TICKS(300)); // 短暂延迟，确保 BLE 初始化完成
-    esp_task_wdt_reset();           // 重置看门狗，延迟后
+    // to-do：有没有必要，我不确定！
+    // 添加启动 BLE 广播的代码
+    if (!ble_config.StartAdvertising()) {
+        ESP_LOGE(TAG, "启动 BLE 广播失败");
+        return false;
+    }
 
     return true; // 返回成功
 }
@@ -196,9 +182,8 @@ bool WifiBoard::InitializeAndStartBleAdvertising()
 void WifiBoard::UpdateUiForBleConfig()
 {
     ESP_LOGI(TAG, "%s @UpdateUiForBleConfig：更新 UI 及播放提示音", GetTimeString().c_str());
-    auto &application = Application::GetInstance();
+    auto &application = Application::GetInstance(); // 获取应用实例，用于显示提示音和更新 UI
 
-    // 优化提示合成，合并为一条 Alert，BLE 设备名可灵活配置
     std::string ble_hint;
     if (Lang::Strings::CONNECT_TO_BLE && Lang::Strings::CONNECT_TO_BLE[0] != '\0')
     {
@@ -215,7 +200,7 @@ void WifiBoard::UpdateUiForBleConfig()
 
 
     ESP_LOGI(TAG, "%s @UpdateUiForBleConfig： ------------------------------------------------------------ ", GetTimeString().c_str()); // 分割线
-    application.Alert(Lang::Strings::BLE_CONFIG_MODE, ble_hint.c_str(), "thinking", Lang::Sounds::P3_WIFICONFIG);                       // 显示提示,播放提示音
+    application.Alert(Lang::Strings::BLE_CONFIG_MODE, ble_hint.c_str(), "loving", Lang::Sounds::P3_WIFICONFIG);                       // 显示提示,播放提示音
     ESP_LOGI(TAG, "%s @UpdateUiForBleConfig： ------------------------------------------------------------ ", GetTimeString().c_str()); // 分割线
 
     ESP_LOGI(TAG, "%s @UpdateUiForBleConfig：显示 BLE 配网提示 和 播放提示音：\"进入配网模式\"完成", GetTimeString().c_str());
@@ -321,7 +306,7 @@ void WifiBoard::EnterWifiConfigMode()
     if (!SetupBleCallbacks())
     {
         ESP_LOGE(TAG, "@EnterWifiConfigMode：设置 BLE 回调函数失败");
-        application.Alert(Lang::Strings::ERROR, "BLE回调设置失败", "sad", Lang::Sounds::P3_ERR_PIN);
+        application.Alert(Lang::Strings::ERROR, "BLE回调设置失败", "sad", Lang::Sounds::P3_ERR_PIN);    // to-do：临时采用
         return;
     }
     esp_task_wdt_reset(); // 重置看门狗
@@ -353,23 +338,27 @@ void WifiBoard::EnterWifiConfigMode()
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：UI提示已更新", GetTimeString().c_str());
     esp_task_wdt_reset(); // 重置看门狗
 
-    // 启动第一个配网超时语音提示任务
+    // 启动 配网超时 语音提示任务
     if (!StartWifiConfigTimeoutTask())
     {
-        ESP_LOGE(TAG, "@EnterWifiConfigMode：启动初始配网超时任务失败！");
+        ESP_LOGE(TAG, "@EnterWifiConfigMode：启动配网超时任务失败！");
         application.Alert(Lang::Strings::ERROR, "超时监控启动失败", "sad", "");
         return;
     }
+
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：初始配网超时任务已启动，等待 WiFi 凭据...", GetTimeString().c_str());
     esp_task_wdt_reset(); // 重置看门狗
 
     // --- 5. 主等待循环 ---
-    const int check_interval_ms = 100;  // 缩短检查间隔，提高响应性
-    int elapsed_ms_for_next_prompt = 0;
-    const int timeout_ms_for_next_prompt_period = config_timeout_minutes_ * 60 * 1000;
-    bool should_connect_wifi = false;
+    const int check_interval_ms = 100;      // 缩短检查间隔，提高响应性
+    int elapsed_ms_for_next_prompt = 0;     // 用于跟踪下一次语音提示的超时
+    const int timeout_ms_for_next_prompt_period = config_timeout_minutes_ * 60 * 1000;  // 3分钟
+    bool should_connect_wifi = false;       // 标志，用于指示是否需要连接WiFi
 
-    while (true)
+
+
+
+    while (true)    // 原来这里有问题，怎么能是个没判断的循环呢？
     {
         esp_task_wdt_reset(); // 在循环的开始喂狗
         
@@ -388,22 +377,22 @@ void WifiBoard::EnterWifiConfigMode()
         
         // 在互斥锁外执行耗时操作
         if (should_connect_wifi) {
-            ESP_LOGI(TAG, "%s @EnterWifiConfigMode：开始连接WiFi - SSID: %s", 
-                     GetTimeString().c_str(), ble_ssid_.c_str());
-            
-            // 执行WiFi连接
+            // 执行WiFi连接操作
+            ESP_LOGI(TAG, "%s @EnterWifiConfigMode：开始连接WiFi - SSID: %s", GetTimeString().c_str(), ble_ssid_.c_str());
+
+            // 连接WiFi并等待结果
             bool connect_result = ConnectWifiByBle(ble_ssid_, ble_password_);
-            
+
+
             // 更新状态
             std::lock_guard<std::mutex> lock(ble_config_mutex_);
+
             if (connect_result) {
                 ble_config_state_ = BleConfigState::SUCCESS;
-                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接成功，状态更新为SUCCESS", 
-                         GetTimeString().c_str());
+                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接成功，状态更新为SUCCESS", GetTimeString().c_str());
             } else {
                 ble_config_state_ = BleConfigState::FAILED;
-                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接失败，状态更新为FAILED", 
-                         GetTimeString().c_str());
+                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接失败，状态更新为FAILED", GetTimeString().c_str());
             }
         }
 
@@ -412,7 +401,9 @@ void WifiBoard::EnterWifiConfigMode()
         {
             ESP_LOGW(TAG, "%s @EnterWifiConfigMode：内部等待凭据超时 (%d 分钟)，将触发下一次语音提示。", 
                      GetTimeString().c_str(), config_timeout_minutes_);
+
             ResetTimeoutTaskHandle();
+
             if (!StartWifiConfigTimeoutTask()) {
                 ESP_LOGE(TAG, "@EnterWifiConfigMode：在内部超时后，无法重新启动超时任务！");
             }
@@ -422,7 +413,18 @@ void WifiBoard::EnterWifiConfigMode()
         vTaskDelay(pdMS_TO_TICKS(check_interval_ms));
         elapsed_ms_for_next_prompt += check_interval_ms;
     }
+
+
+
+
+
 } // End of EnterWifiConfigMode()
+
+
+
+
+
+
 
 // 配网超时任务
 static void WifiConfigTimeoutTask(void *pvParameters)
@@ -487,16 +489,30 @@ HandleWifiConnectFailure: 处理WiFi连接失败
 */
 // 保存WiFi凭据到NVS和认证管理器
 void WifiBoard::SaveWifiCredentials(const std::string &ssid, const std::string &password) {
+
     ESP_LOGI(TAG, "%s @SaveWifiCredentials：保存WiFi凭据 - SSID: %s", GetTimeString().c_str(), ssid.c_str());
     
-    // 保存到NVS
-    auto &ssid_manager = SsidManager::GetInstance();
-    ssid_manager.AddSsid(ssid, password);
-    ESP_LOGI(TAG, "%s @SaveWifiCredentials：WiFi凭据已保存到NVS", GetTimeString().c_str());
-    
-    // 短暂延时，让任务有时间处理完成当前操作
-    vTaskDelay(pdMS_TO_TICKS(100));
-    esp_task_wdt_reset();
+
+
+
+
+
+    ESP_LOGI(TAG, "%s @SaveWifiCredentials：我来测试一下，不保存WiFi凭据是什么效果？ - SSID: %s", GetTimeString().c_str(), ssid.c_str());
+
+
+
+
+    // 我来测试一下，不保存是什么效果？
+
+
+    // // 保存到NVS
+    // auto &ssid_manager = SsidManager::GetInstance();
+    // ssid_manager.AddSsid(ssid, password);
+    // ESP_LOGI(TAG, "%s @SaveWifiCredentials：WiFi凭据已保存到NVS", GetTimeString().c_str());
+
+
+
+
     
     // 添加认证信息
     auto &wifi_station = WifiStation::GetInstance();
@@ -528,10 +544,12 @@ bool WifiBoard::ReleaseBleResources(const MemorySnapshot &initial_snapshot) {
     // 记录释放后的内存状态
     MemorySnapshot after_release = get_memory_snapshot();
     log_memory_state(TAG, "ReleaseBleResources：释放后内存状态", after_release);
+
+
+
     ESP_LOGI(TAG, "%s @ReleaseBleResources：释放过程中内存恢复: %d字节", 
              GetTimeString().c_str(), (int)(after_release.total_heap - before_release.total_heap));
-    ESP_LOGI(TAG, "%s @ReleaseBleResources：与初始状态相比总内存变化: %d字节", 
-             GetTimeString().c_str(), (int)(after_release.total_heap - initial_snapshot.total_heap));
+
     
     ESP_LOGI(TAG, "%s @ReleaseBleResources：BLE资源释放完成", GetTimeString().c_str());
     return true;
@@ -585,16 +603,41 @@ bool WifiBoard::StartWifiAndWaitForConnection() {
     esp_task_wdt_reset();
     
     auto &wifi_station = WifiStation::GetInstance();
-    wifi_station.Start();
-    vTaskDelay(pdMS_TO_TICKS(500));
+
+    wifi_station.Start();   // 启动WiFi连接, 会自动启动配网超时任务
     
-    esp_task_wdt_reset();
+    esp_task_wdt_reset();   // 重置任务看门狗
+
     MemorySnapshot after_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "StartWifiAndWaitForConnection：启动WiFi后", after_snapshot);
+
     
     // 等待连接结果
     ESP_LOGI(TAG, "%s @StartWifiAndWaitForConnection：等待WiFi连接结果(8秒)", GetTimeString().c_str());
+    // 等待8秒, 超时后会自动断开, 但不会影响后续流程, 但会触发断开连接事件, 会导致设备重启
+    // 所以这里需要等待8秒, 确保WiFi连接成功, 否则会导致设备重启
+    // 这里可以考虑使用事件机制, 等待WiFi连接成功, 然后再继续后续流程
+    // 或者使用定时器, 超时后自动断开连接, 然后再继续后续流程
     bool connected = wifi_station.WaitForConnected(8000);
+
+    /*
+    不够灵活： 
+    固定的等待时间可能无法适应所有的网络环境和实际情况。在网络状况较差的情况下，8 秒可能不足以完成连接，导致连接失败；
+    而在网络状况良好时，可能不需要这么长的等待时间，造成不必要的时间浪费。
+    
+    可能导致设备重启： 
+    如代码注释中提到的，超时后自动断开连接可能会触发断开连接事件，进而导致设备重启，
+    这对于一些对稳定性要求较高的应用场景是一个严重的问题，可能会影响用户体验和设备的正常运行。
+    
+    缺乏实时反馈： 
+    在等待的 8 秒时间内，程序无法及时响应 WiFi 连接状态的变化，只能被动等待时间结束。
+    如果在等待过程中连接已经成功，程序也不能立即继续后续流程，而是要等到 8 秒结束，这会降低程序的响应速度和效率。
+    
+    错误处理不灵活： 
+    当连接超时或失败时，这种方式的错误处理相对简单，只是获取一个连接结果的布尔值，
+    对于具体的错误原因和更细致的处理逻辑支持不够，不利于对连接问题进行深入排查和处理。
+    */
+
     esp_task_wdt_reset();
     
     return connected;
@@ -666,11 +709,23 @@ void WifiBoard::HandleWifiConnectFailure() {
 }
 
 // 主函数：BLE配网流程中的WiFi连接实现
+/**
+ * @brief 通过BLE配网连接WiFi
+ *
+ * 该函数处理通过BLE接收到的WiFi凭据进行连接的全流程，包括：
+ * 1. 保存WiFi凭据到NVS
+ * 2. 释放BLE资源
+ * 3. 启动WiFi连接并等待结果
+ *
+ * @param ssid WiFi名称
+ * @param password WiFi密码
+ * @return true 连接成功
+ * @return false 连接失败
+ */
 bool WifiBoard::ConnectWifiByBle(const std::string &ssid, const std::string &password)
 {
-    ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE配网流程 - 准备连接WiFi SSID: %s", 
-             GetTimeString().c_str(), ssid.c_str());
-    
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle：BLE配网流程 - 准备连接WiFi SSID: %s", GetTimeString().c_str(), ssid.c_str());
+
     // 检查当前内存状态
     MemorySnapshot connectWifi_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "ConnectWifiByBle：连接WiFi前，初始内存状态", connectWifi_snapshot);
@@ -678,15 +733,16 @@ bool WifiBoard::ConnectWifiByBle(const std::string &ssid, const std::string &pas
 
     // 1. 保存WiFi凭据
     ESP_LOGI(TAG, "%s @ConnectWifiByBle # SaveWifiCredentials：保存WiFi凭据到NVS", GetTimeString().c_str());
-    SaveWifiCredentials(ssid, password);
+    SaveWifiCredentials(ssid, password);    // 保存凭据到NVS（check：好像没啥用，暂时保留 to-do：）
     
     // 2. 释放BLE资源
     ESP_LOGI(TAG, "%s @ConnectWifiByBle # ReleaseBleResources：释放BLE资源", GetTimeString().c_str());
-    ReleaseBleResources(connectWifi_snapshot);
+    ReleaseBleResources(connectWifi_snapshot);  // 释放BLE资源, 释放内存
     
     // 3. 启动WiFi并等待连接
     ESP_LOGI(TAG, "%s @ConnectWifiByBle # StartWifiAndWaitForConnection：启动WiFi并等待连接", GetTimeString().c_str());
-    bool connected = StartWifiAndWaitForConnection();
+
+    bool connected = StartWifiAndWaitForConnection();   // 启动WiFi并等待连接
     
     if (connected) {
         ESP_LOGI(TAG, "%s @ConnectWifiByBle：WiFi连接成功", GetTimeString().c_str());
@@ -710,7 +766,6 @@ bool WifiBoard::ConnectWifiByBle(const std::string &ssid, const std::string &pas
         return false;
     }
 }
-
 
 // <<<<<<<<<<<<<<<<<<<<<< BLE配网流程中的WiFi连接实现 【END】>>>>>>>>>>>>>>>>>>>>>>
 
