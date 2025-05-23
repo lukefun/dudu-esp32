@@ -149,33 +149,51 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
     },
     { 0 }
 };
+/*
+这是一个GATT服务注册回调函数,用于处理BLE服务、特征值和描述符的注册过程。
 
+主要功能:
+1. 处理服务注册(BLE_GATT_REGISTER_OP_SVC)
+2. 处理特征值注册(BLE_GATT_REGISTER_OP_CHR) 
+3. 处理描述符注册(BLE_GATT_REGISTER_OP_DSC)
+4. 保存控制状态特征值的句柄,用于后续通知操作
+
+参数说明:
+- ctxt: 注册上下文,包含操作类型和相关数据
+- arg: 用户自定义参数(本函数未使用)
+*/
 void BleConfig::gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg) {
     char buf[BLE_UUID_STR_LEN];
     switch (ctxt->op) {
     case BLE_GATT_REGISTER_OP_SVC:
-        ESP_LOGI(TAG, "%s @gatt_svr_register_cb: registered service %s with handle=0x%04x",
-               GetTimeString().c_str(), ble_uuid_to_str(ctxt->svc.svc_def->uuid, buf),
-               ctxt->svc.handle);
+        // 服务注册完成时的处理
+        ESP_LOGI(TAG, "%s @gatt_svr_register_cb: registered service %s with handle=0x%04x", GetTimeString().c_str(), ble_uuid_to_str(ctxt->svc.svc_def->uuid, buf), ctxt->svc.handle);
         break;
+        
     case BLE_GATT_REGISTER_OP_CHR:
+        // 特征值注册时的处理
         ESP_LOGI(TAG, "%s @gatt_svr_register_cb: registering characteristic %s with def_handle=0x%04x val_handle=0x%04x",
                GetTimeString().c_str(), ble_uuid_to_str(ctxt->chr.chr_def->uuid, buf),
                ctxt->chr.def_handle,
                ctxt->chr.val_handle);
                
+        // 如果是控制状态特征值,则保存其句柄
         if (g_ble_config_instance && 
             ble_uuid_cmp(ctxt->chr.chr_def->uuid, &gatt_svr_chr_control_status_uuid.u) == 0) {
             g_ble_config_instance->status_val_handle_ = ctxt->chr.val_handle;
             ESP_LOGI(TAG, "%s @gatt_svr_register_cb: 保存控制状态特征值句柄: 0x%04x", GetTimeString().c_str(), ctxt->chr.val_handle);
         }
         break;
+        
     case BLE_GATT_REGISTER_OP_DSC:
+        // 描述符注册时的处理
         ESP_LOGI(TAG, "%s @gatt_svr_register_cb: registering descriptor %s with handle=0x%04x",
                GetTimeString().c_str(), ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, buf),
                ctxt->dsc.handle);
         break;
+        
     default:
+        // 未知操作类型,触发断言
         assert(0);
         break;
     }
@@ -720,13 +738,11 @@ void BleConfig::ble_host_task(void *param) {
     
     // 设置完成标志，ble_hs_deinit()和nimble_port_deinit()将在Deinitialize中调用
     ble_deinit_completed.store(true);
-    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务准备退出，已设置完成标志，释放NimBLE资源在Deinitialize中完成✅", GetTimeString().c_str());
+    ESP_LOGI(TAG, "%s @ble_host_task: BLE主机任务准备退出，已设置[ 完成 ]标志，释放NimBLE资源在Deinitialize中完成✅", GetTimeString().c_str());
 
-
-    // // 清空全局任务句柄
-    // ble_host_task_handle = NULL;
-
-    // 任务自行退出
+    // 清空全局任务句柄
+    ble_host_task_handle = NULL;
+    ESP_LOGI(TAG, "%s @ble_host_task: 已清空全局任务句柄", GetTimeString().c_str());
     ESP_LOGI(TAG, "%s @ble_host_task: 任务正常退出", GetTimeString().c_str());
     vTaskDelete(NULL);
 }
@@ -922,30 +938,32 @@ void BleConfig::Deinitialize() {
 
         // 1. 先去初始化NimBLE端口
         ESP_LOGI(TAG, "%s @Deinitialize: 1. 调用 nimble_port_deinit()", GetTimeString().c_str());
-        int rc = nimble_port_deinit();
-        if (rc != 0 && rc != BLE_HS_EALREADY)
-        {
-            ESP_LOGE(TAG, "%s @Deinitialize: nimble_port_deinit() 失败: %d", GetTimeString().c_str(), rc);
-        }
-        else
-        {
-            ESP_LOGI(TAG, "%s @Deinitialize: nimble_port_deinit() 成功", GetTimeString().c_str());
+        // 调用 nimble_port_deinit(), 目的是释放NimBLE资源，包括内存、任务、事件等
+        int rc = nimble_port_deinit();  // 成功返回0，失败返回错误码, 错误码2表示已经没有广播在运行
+
+        if (rc != 0) {
+            switch (rc) {
+                case BLE_HS_EALREADY:
+                    ESP_LOGW(TAG, "%s @Deinitialize: 蓝牙栈已处于未初始化状态", GetTimeString().c_str());
+                    break;
+                case BLE_HS_EBUSY:
+                    ESP_LOGE(TAG, "%s @Deinitialize: 蓝牙栈忙，无法反初始化", GetTimeString().c_str());
+                    break;
+                // 其他错误码...
+                default:
+                    ESP_LOGE(TAG, "%s @Deinitialize: 未知错误: %d", GetTimeString().c_str(), rc);
+            }
+        } else {
+            ESP_LOGI(TAG, "%s @Deinitialize: 蓝牙栈反初始化成功", GetTimeString().c_str());
         }
 
         // 2. 等待nimble_port_deinit完成清理
-        ESP_LOGI(TAG, "%s @Deinitialize: 2. 等待nimble_port_deinit()完成清理", GetTimeString().c_str());
-        vTaskDelay(pdMS_TO_TICKS(5000));  // 设置 5 秒，给完成清理留足时间
+        // ESP_LOGI(TAG, "%s @Deinitialize: 2. 等待nimble_port_deinit()完成清理", GetTimeString().c_str());
+        // vTaskDelay(pdMS_TO_TICKS(5000));  // 设置 5 秒，给完成清理留足时间
 
         // 对与 Nimble 相关的端口进行去初始化操作 5 秒后的内存状态
         MemorySnapshot nimble_port_deinit_snapshot = get_memory_snapshot();
-        log_memory_state(TAG, "Deinitialize: 对与 Nimble 相关的端口进行去初始化操作 5 秒后的内存状态", nimble_port_deinit_snapshot);
-
-        // 2. 再去初始化主机栈
-        ESP_LOGI(TAG, "%s @Deinitialize: 调用 ble_hs_deinit()", GetTimeString().c_str());
-        // ble_hs_deinit();     // 调用主机栈去初始化
-
-        // 清空全局任务句柄
-        ble_host_task_handle = NULL;
+        log_memory_state(TAG, "Deinitialize: 蓝牙栈反初始化成功的内存状态", nimble_port_deinit_snapshot);
 
         // 销毁事件循环
         if (ble_event_loop != nullptr)

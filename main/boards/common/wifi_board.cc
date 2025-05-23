@@ -18,6 +18,8 @@
 #include <sstream>
 #include <string>
 #include <inttypes.h>   // <--- 包含 C++11 标准库头文件
+#include <esp_wifi.h>
+#include <esp_netif.h> // <-- 添加这一行
 
 #include "application.h"        // <--- 包含 Application 头文件
 #include "assets/lang_config.h" // <--- 包含语言配置头文件
@@ -77,6 +79,19 @@ public:
 WifiBoard::WifiBoard()
 {
     ESP_LOGI(TAG, "%s @WifiBoard：初始化 WifiBoard", GetTimeString().c_str());
+
+    // 初始化 TCP/IP 协议栈和网络接口层
+    esp_err_t ret = esp_netif_init();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        // ESP_ERR_INVALID_STATE 表示已经初始化过，这是可以接受的
+        ESP_ERROR_CHECK(ret); // 对于其他错误，使用 ESP_ERROR_CHECK
+    } else if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "%s @WifiBoard：esp_netif_init() 成功", GetTimeString().c_str());
+    } else {
+         ESP_LOGI(TAG, "%s @WifiBoard：esp_netif_init() 已初始化过", GetTimeString().c_str());
+    }
+
+
     Settings settings("wifi", true);
     wifi_config_mode_ = settings.GetInt("force_ap") == 1;
     if (wifi_config_mode_)
@@ -349,6 +364,30 @@ void WifiBoard::EnterWifiConfigMode()
     ESP_LOGI(TAG, "%s @EnterWifiConfigMode：初始配网超时任务已启动，等待 WiFi 凭据...", GetTimeString().c_str());
     esp_task_wdt_reset(); // 重置看门狗
 
+
+
+
+
+
+    // --- Netif资源彻底释放最佳实践 ---
+    // ESP_LOGI(TAG, "%s @EnterWifiConfigMode # 检查是否存在残留的netif", GetTimeString().c_str());
+    // esp_netif_t *netif = esp_netif_next_unsafe(NULL);
+    // while (netif) {
+    //     const char *if_key = esp_netif_get_ifkey(netif);
+    //     if (if_key && strcmp(if_key, "WIFI_STA_DEF") == 0) {
+    //         ESP_LOGW(TAG, "%s @EnterWifiConfigMode：[NetifCleanup] 检测到残留netif key: %s，执行销毁", GetTimeString().c_str(), if_key);
+    //         esp_netif_destroy(netif);
+    //         ESP_LOGI(TAG, "%s @EnterWifiConfigMode：[NetifCleanup] 已调用销毁netif: %s", GetTimeString().c_str(), if_key);
+    //     }
+    //     netif = esp_netif_next_unsafe(netif);
+    // }
+    // --- Netif资源彻底释放结束 ---
+
+
+
+
+
+
     // --- 5. 主等待循环 ---
     const int check_interval_ms = 100;      // 缩短检查间隔，提高响应性
     int elapsed_ms_for_next_prompt = 0;     // 用于跟踪下一次语音提示的超时
@@ -361,22 +400,23 @@ void WifiBoard::EnterWifiConfigMode()
     while (true)    // 原来这里有问题，怎么能是个没判断的循环呢？
     {
         esp_task_wdt_reset(); // 在循环的开始喂狗
-        
+
         // 使用互斥锁保护状态检查和更新
         {
             std::lock_guard<std::mutex> lock(ble_config_mutex_);
-            
+
             // 如果标志已设置，复制到局部变量并重置
             if (should_connect_wifi_) {
                 should_connect_wifi = true;
                 should_connect_wifi_ = false;
-                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：检测到连接标志已设置，准备连接WiFi", 
+                ESP_LOGI(TAG, "%s @EnterWifiConfigMode：检测到连接标志已设置，准备连接WiFi",
                          GetTimeString().c_str());
             }
         }
-        
+
         // 在互斥锁外执行耗时操作
-        if (should_connect_wifi) {
+        if (should_connect_wifi)
+        {
             // 执行WiFi连接操作
             ESP_LOGI(TAG, "%s @EnterWifiConfigMode：开始连接WiFi - SSID: %s", GetTimeString().c_str(), ble_ssid_.c_str());
 
@@ -387,20 +427,62 @@ void WifiBoard::EnterWifiConfigMode()
             // 更新状态
             std::lock_guard<std::mutex> lock(ble_config_mutex_);
 
-            if (connect_result) {
+            if (connect_result)
+            {
                 ble_config_state_ = BleConfigState::SUCCESS;
                 ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接成功，状态更新为SUCCESS", GetTimeString().c_str());
-            } else {
+                break; // 连接成功，退出循环
+            }
+            else
+            {
                 ble_config_state_ = BleConfigState::FAILED;
                 ESP_LOGI(TAG, "%s @EnterWifiConfigMode：WiFi连接失败，状态更新为FAILED", GetTimeString().c_str());
+
+                // 先释放WiFi资源，腾出内存空间
+                if (!StopAndReleaseWifiResources())
+                {
+                    ESP_LOGW(TAG, "%s @EnterWifiConfigMode：释放WiFi资源过程中出现警告，但将继续尝试重启BLE", GetTimeString().c_str());
+                }
+
+                // 重新启动BLE广播，最多重试3次
+                const int max_retries = 3;
+                int retry_count = 0;
+                bool restart_success = false;
+                while (retry_count < max_retries && !restart_success)
+                {
+                    esp_task_wdt_reset(); // 重置看门狗，防止长时间操作触发重启
+                    esp_err_t err = InitializeAndStartBleAdvertising() ? ESP_OK : ESP_FAIL;
+                    if (err == ESP_OK)
+                    {
+                        ble_config_state_ = BleConfigState::ADVERTISING;
+                        ESP_LOGI(TAG, "%s @EnterWifiConfigMode：重新启动BLE广播成功，重试次数: %d", GetTimeString().c_str(), retry_count + 1);
+                        restart_success = true;
+                    }
+                    else
+                    {
+                        ESP_LOGE(TAG, "%s @EnterWifiConfigMode：重新启动BLE广播失败，重试次数: %d，错误码: %d", GetTimeString().c_str(), retry_count + 1, err);
+                        retry_count++;
+                        vTaskDelay(pdMS_TO_TICKS(500)); // 失败后等待一段时间再重试
+                    }
+                }
+
+                if (!restart_success)
+                {
+                    ESP_LOGE(TAG, "%s @EnterWifiConfigMode：多次尝试重新启动BLE广播均失败，退出配网模式", GetTimeString().c_str());
+                    auto &application = Application::GetInstance();
+                    application.Alert(Lang::Strings::ERROR, "多次尝试重新启动BLE广播失败，请手动处理", "sad", Lang::Sounds::P3_ERR_PIN);
+                    break; // 多次重试失败，退出循环
+                }
             }
+            // 重置 should_connect_wifi 标志，避免重复尝试连接
+            should_connect_wifi = false;
         }
 
         // 检查是否到达下一个语音提示的超时时间
         if (elapsed_ms_for_next_prompt >= timeout_ms_for_next_prompt_period)
         {
-            ESP_LOGW(TAG, "%s @EnterWifiConfigMode：内部等待凭据超时 (%d 分钟)，将触发下一次语音提示。", 
-                     GetTimeString().c_str(), config_timeout_minutes_);
+            ESP_LOGW(TAG, "%s @EnterWifiConfigMode：内部等待凭据超时 (%d 分钟)，将触发下一次语音提示。",
+                    GetTimeString().c_str(), config_timeout_minutes_);
 
             ResetTimeoutTaskHandle();
 
@@ -410,14 +492,11 @@ void WifiBoard::EnterWifiConfigMode()
             elapsed_ms_for_next_prompt = 0;
         }
 
+        // 无论是否连接WiFi，都进行短暂延时并重置看门狗
+        esp_task_wdt_reset(); // 在每次循环结束前重置看门狗
         vTaskDelay(pdMS_TO_TICKS(check_interval_ms));
         elapsed_ms_for_next_prompt += check_interval_ms;
     }
-
-
-
-
-
 } // End of EnterWifiConfigMode()
 
 
@@ -739,6 +818,37 @@ bool WifiBoard::ConnectWifiByBle(const std::string &ssid, const std::string &pas
     ESP_LOGI(TAG, "%s @ConnectWifiByBle # ReleaseBleResources：释放BLE资源", GetTimeString().c_str());
     ReleaseBleResources(connectWifi_snapshot);  // 释放BLE资源, 释放内存
     
+    // --- Netif资源彻底释放最佳实践 ---
+    // 检查是否存在残留的netif
+    // ESP_LOGI(TAG, "%s @ConnectWifiByBle # 检查是否存在残留的netif", GetTimeString().c_str());
+    // esp_netif_t *netif = esp_netif_next_unsafe(NULL);
+    // while (netif) {
+    //     const char *if_key = esp_netif_get_ifkey(netif);
+    //     if (if_key && strcmp(if_key, "WIFI_STA_DEF") == 0) {
+    //         ESP_LOGW("WifiBoard", "[NetifCleanup] 检测到残留netif key: %s，执行销毁", if_key);
+    //         esp_netif_destroy(netif);
+    //         ESP_LOGI("WifiBoard", "[NetifCleanup] 已调用销毁netif: %s", if_key);
+    //     }
+    //     netif = esp_netif_next_unsafe(netif);
+    // }
+
+
+
+    ESP_LOGI(TAG, "%s @ConnectWifiByBle # 检查是否存在残留的netif", GetTimeString().c_str());
+    esp_netif_t *netif = esp_netif_next_unsafe(NULL);
+    while (netif) {
+        const char *if_key = esp_netif_get_ifkey(netif);
+        if (if_key && strcmp(if_key, "WIFI_STA_DEF") == 0) {
+            ESP_LOGW(TAG, "%s @ConnectWifiByBle：[NetifCleanup] 检测到残留netif key: %s，执行销毁", GetTimeString().c_str(), if_key);
+            esp_netif_destroy(netif);
+            ESP_LOGI(TAG, "%s @ConnectWifiByBle：[NetifCleanup] 已调用销毁netif: %s", GetTimeString().c_str(), if_key);
+        }
+        netif = esp_netif_next_unsafe(netif);
+    }
+
+    // --- Netif资源彻底释放结束 ---
+
+    
     // 3. 启动WiFi并等待连接
     ESP_LOGI(TAG, "%s @ConnectWifiByBle # StartWifiAndWaitForConnection：启动WiFi并等待连接", GetTimeString().c_str());
 
@@ -832,6 +942,13 @@ bool WifiBoard::TryConnectSavedWifi()
     {
         ESP_LOGW(TAG, "%s @TryConnectSavedWifi：[WiFi 连接失败] 用保存在 NVS 的配置，连接 WiFi 失败", GetTimeString().c_str());
         wifi_station.Stop(); // 停止尝试连接
+
+        // to-do: 播放连接失败提示音，现在还不能实现，回头研究一下
+        // // 播放连接失败提示音
+        // auto &application = Application::GetInstance();
+        // ESP_LOGW(TAG, "%s @TryConnectSavedWifi：播放连接失败提示音", GetTimeString().c_str());
+        // application.PlaySound(Lang::Sounds::P3_WIFI_CONFIG_FAIL);
+        
         return false;        // 连接失败
     }
 }
@@ -1019,4 +1136,42 @@ void WifiBoard::ResetWifiConfiguration()
     // Reboot the device
     ESP_LOGI(TAG, "%s @ResetWifiConfiguration：重启设备以进入配网模式", GetTimeString().c_str());
     esp_restart();
+}
+
+// 添加一个新方法用于释放WiFi资源
+bool WifiBoard::StopAndReleaseWifiResources()
+{
+    ESP_LOGI(TAG, "%s @StopAndReleaseWifiResources：停止并释放WiFi资源", GetTimeString().c_str());
+    
+    // 获取当前内存快照
+    MemorySnapshot snapshot = get_memory_snapshot();
+    log_memory_state(TAG, "@StopAndReleaseWifiResources：释放WiFi前", snapshot);
+    
+    // 断开WiFi连接
+    ESP_LOGI(TAG, "%s @StopAndReleaseWifiResources：调用esp_wifi_disconnect()", GetTimeString().c_str());
+    esp_err_t err = esp_wifi_disconnect();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s @StopAndReleaseWifiResources：esp_wifi_disconnect() 失败，错误码: %d", GetTimeString().c_str(), err);
+    }
+    
+    // 停止WiFi
+    ESP_LOGI(TAG, "%s @StopAndReleaseWifiResources：调用esp_wifi_stop()", GetTimeString().c_str());
+    err = esp_wifi_stop();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s @StopAndReleaseWifiResources：esp_wifi_stop() 失败，错误码: %d", GetTimeString().c_str(), err);
+    }
+    
+    // 释放WiFi资源
+    ESP_LOGI(TAG, "%s @StopAndReleaseWifiResources：调用esp_wifi_deinit()", GetTimeString().c_str());
+    err = esp_wifi_deinit();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s @StopAndReleaseWifiResources：esp_wifi_deinit() 失败，错误码: %d", GetTimeString().c_str(), err);
+        return false;
+    }
+    
+    // 获取释放后的内存快照
+    snapshot = get_memory_snapshot();
+    log_memory_state(TAG, "@StopAndReleaseWifiResources：释放WiFi后", snapshot);
+    
+    return true;
 }

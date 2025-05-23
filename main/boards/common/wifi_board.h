@@ -56,6 +56,9 @@ protected:
     // 新增：处理WiFi连接失败
     void HandleWifiConnectFailure();
 
+    // 新增：释放WiFi资源
+    bool StopAndReleaseWifiResources();
+
 
     // 新增：保存BLE配网过程中收到的SSID/密码
     std::string ble_ssid_;
