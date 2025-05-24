@@ -4,6 +4,10 @@
 #include "board.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h" // 添加 FreeRTOS 任务头文件
+#include "freertos/event_groups.h" // 添加事件组头文件
+#include "esp_event.h"            // 添加ESP事件系统头文件
+#include "esp_wifi.h"             // 添加WiFi头文件
+#include "esp_log.h"              // 添加日志头文件
 #include "ble_config/ble_task_state.h" 
 
 // ble-WiFi 连接失败原因枚举
@@ -30,6 +34,8 @@ protected:
     bool wifi_config_mode_ = false;
 
     WifiBoard();
+    ~WifiBoard();
+
     void EnterWifiConfigMode();
     virtual std::string GetBoardJson() override;
 
@@ -79,6 +85,24 @@ private:
     BleConfigState ble_config_state_ = BleConfigState::IDLE;     // 新增：BLE配网状态
     std::mutex ble_config_mutex_;    // 保护配网状态的互斥锁
     bool should_connect_wifi_ = false; // 新增：标记是否应该连接WiFi
+
+    // WiFi事件组句柄
+    EventGroupHandle_t wifi_event_group_ = nullptr;
+    // 事件位定义
+    static const int WIFI_CONNECTED_BIT = BIT0; // 连接成功
+    static const int WIFI_FAIL_BIT = BIT1;      // 连接失败
+    static const int WIFI_AUTH_FAIL_BIT = BIT2;  // 认证失败（密码错误等）
+    
+    // WiFi事件处理器ID
+    esp_event_handler_instance_t wifi_event_instance_ = nullptr;    // WiFi事件组, 用于处理WiFi连接事件
+    esp_event_handler_instance_t ip_event_instance_ = nullptr;      // IP事件组, 用于处理IP事件
+    
+    // 静态事件处理回调函数
+    static void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
+    // 注册WiFi事件处理器
+    void RegisterWifiEventHandlers();
+    // 注销WiFi事件处理器
+    void UnregisterWifiEventHandlers();
 
 public:
     virtual std::string GetBoardType() override;    // 新增：返回板卡类型

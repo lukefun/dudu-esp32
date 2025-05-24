@@ -91,7 +91,7 @@ WifiBoard::WifiBoard()
          ESP_LOGI(TAG, "%s @WifiBoard：esp_netif_init() 已初始化过", GetTimeString().c_str());
     }
 
-
+    // 初始化 WiFi 模块
     Settings settings("wifi", true);
     wifi_config_mode_ = settings.GetInt("force_ap") == 1;
     if (wifi_config_mode_)
@@ -100,6 +100,25 @@ WifiBoard::WifiBoard()
         settings.SetInt("force_ap", 0);
     }
     ESP_LOGI(TAG, "%s @WifiBoard：WifiBoard 初始化完成，配网模式状态: %s", GetTimeString().c_str(), wifi_config_mode_ ? "启用" : "禁用");
+
+    // 创建WiFi事件组
+    wifi_event_group_ = xEventGroupCreate();
+    if (wifi_event_group_ == nullptr) {
+        ESP_LOGE(TAG, "创建WiFi事件组失败");
+    }
+
+}
+
+// 在析构函数中释放资源
+WifiBoard::~WifiBoard() {
+    // 删除事件组
+    if (wifi_event_group_ != nullptr) {
+        vEventGroupDelete(wifi_event_group_);
+        wifi_event_group_ = nullptr;
+    }
+    
+    // 注销事件处理器
+    UnregisterWifiEventHandlers();
 }
 
 std::string WifiBoard::GetBoardType()
@@ -672,52 +691,150 @@ void WifiBoard::TakeEmergencyMeasures() {
             GetTimeString().c_str(), (int)(after.internal_ram - current.internal_ram));
 }
 
-// 启动WiFi并等待连接
+
+// 注册WiFi事件处理器
+void WifiBoard::RegisterWifiEventHandlers() {
+    // 注销之前的处理器（如果有）
+    UnregisterWifiEventHandlers();
+    
+    // 注册WiFi事件处理器
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                       ESP_EVENT_ANY_ID,
+                                                       &WifiEventHandler,
+                                                       this,
+                                                       &wifi_event_instance_));
+    
+    // 注册IP事件处理器
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                       IP_EVENT_STA_GOT_IP,
+                                                       &WifiEventHandler,
+                                                       this,
+                                                       &ip_event_instance_));
+    
+    ESP_LOGI(TAG, "%s @RegisterWifiEventHandlers：WiFi事件处理器注册成功", GetTimeString().c_str());
+}
+
+// 注销WiFi事件处理器
+void WifiBoard::UnregisterWifiEventHandlers() {
+    if (wifi_event_instance_ != nullptr) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_instance_);
+        wifi_event_instance_ = nullptr;
+    }
+    
+    if (ip_event_instance_ != nullptr) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, ip_event_instance_);
+        ip_event_instance_ = nullptr;
+    }
+    
+    ESP_LOGI(TAG, "%s @UnregisterWifiEventHandlers：WiFi事件处理器已注销", GetTimeString().c_str());
+}
+
+// 静态事件处理回调函数实现
+void WifiBoard::WifiEventHandler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data) {
+    WifiBoard* board = static_cast<WifiBoard*>(arg);
+
+    if (board == nullptr) {
+        ESP_LOGE(TAG, "WiFi事件处理器参数错误");
+        return;
+    }
+    
+    if (event_base == WIFI_EVENT) {
+        if (event_id == WIFI_EVENT_STA_START) {
+            ESP_LOGI(TAG, "%s @WifiEventHandler：WiFi站点已启动，尝试连接", GetTimeString().c_str());
+            esp_wifi_connect();
+        } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
+            ESP_LOGI(TAG, "%s @WifiEventHandler：WiFi已连接到AP", GetTimeString().c_str());
+            // 连接成功，但还需要等待获取IP
+        } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+            wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
+            ESP_LOGW(TAG, "%s @WifiEventHandler：WiFi断开连接，原因: %d", 
+                    GetTimeString().c_str(), event->reason);
+            
+            // 根据断开原因设置不同的事件位
+            if (event->reason == WIFI_REASON_AUTH_FAIL || 
+                event->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT) {
+                // 认证失败（密码错误等）
+                xEventGroupSetBits(board->wifi_event_group_, WIFI_AUTH_FAIL_BIT);
+                ESP_LOGW(TAG, "%s @WifiEventHandler：WiFi认证失败，可能是密码错误", GetTimeString().c_str());
+            } else {
+                // 其他连接失败原因
+                xEventGroupSetBits(board->wifi_event_group_, WIFI_FAIL_BIT);
+                // 尝试重新连接，除非是认证失败
+                esp_wifi_connect();
+            }
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
+        ESP_LOGI(TAG, "%s @WifiEventHandler：获取到IP地址: " IPSTR, 
+                GetTimeString().c_str(), IP2STR(&event->ip_info.ip));
+        xEventGroupSetBits(board->wifi_event_group_, WIFI_CONNECTED_BIT);
+    }
+}
+
+
+// 重构WiFi连接函数，使用事件驱动方式
 bool WifiBoard::StartWifiAndWaitForConnection() {
     ESP_LOGI(TAG, "%s @StartWifiAndWaitForConnection：准备启动WiFi", GetTimeString().c_str());
     
-    // 启动WiFi连接
+    // 启动WiFi连接前记录内存状态
     MemorySnapshot before_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "StartWifiAndWaitForConnection：启动WiFi前", before_snapshot);
     esp_task_wdt_reset();
     
-    auto &wifi_station = WifiStation::GetInstance();
-
-    wifi_station.Start();   // 启动WiFi连接, 会自动启动配网超时任务
+    // 清除之前的事件位
+    if (wifi_event_group_ != nullptr) {
+        xEventGroupClearBits(wifi_event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT);
+    }
     
-    esp_task_wdt_reset();   // 重置任务看门狗
-
+    // 注册WiFi事件处理器
+    RegisterWifiEventHandlers();
+    
+    // 获取WiFi站点实例并启动
+    auto &wifi_station = WifiStation::GetInstance();
+    wifi_station.Start();
+    
+    esp_task_wdt_reset();
+    
+    // 记录启动后的内存状态
     MemorySnapshot after_snapshot = get_memory_snapshot();
     log_memory_state(TAG, "StartWifiAndWaitForConnection：启动WiFi后", after_snapshot);
-
     
-    // 等待连接结果
-    ESP_LOGI(TAG, "%s @StartWifiAndWaitForConnection：等待WiFi连接结果(8秒)", GetTimeString().c_str());
-    // 等待8秒, 超时后会自动断开, 但不会影响后续流程, 但会触发断开连接事件, 会导致设备重启
-    // 所以这里需要等待8秒, 确保WiFi连接成功, 否则会导致设备重启
-    // 这里可以考虑使用事件机制, 等待WiFi连接成功, 然后再继续后续流程
-    // 或者使用定时器, 超时后自动断开连接, 然后再继续后续流程
-    bool connected = wifi_station.WaitForConnected(8000);
-
-    /*
-    不够灵活： 
-    固定的等待时间可能无法适应所有的网络环境和实际情况。在网络状况较差的情况下，8 秒可能不足以完成连接，导致连接失败；
-    而在网络状况良好时，可能不需要这么长的等待时间，造成不必要的时间浪费。
+    // 等待连接结果，使用事件组
+    ESP_LOGI(TAG, "%s @StartWifiAndWaitForConnection：等待WiFi连接结果", GetTimeString().c_str());
     
-    可能导致设备重启： 
-    如代码注释中提到的，超时后自动断开连接可能会触发断开连接事件，进而导致设备重启，
-    这对于一些对稳定性要求较高的应用场景是一个严重的问题，可能会影响用户体验和设备的正常运行。
+    // 设置等待的事件位
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group_,
+                                          WIFI_CONNECTED_BIT | WIFI_FAIL_BIT | WIFI_AUTH_FAIL_BIT,
+                                          pdFALSE,  // 不清除事件位
+                                          pdFALSE,  // 任一事件位被设置即返回
+                                          pdMS_TO_TICKS(15000));  // 最长等待15秒
     
-    缺乏实时反馈： 
-    在等待的 8 秒时间内，程序无法及时响应 WiFi 连接状态的变化，只能被动等待时间结束。
-    如果在等待过程中连接已经成功，程序也不能立即继续后续流程，而是要等到 8 秒结束，这会降低程序的响应速度和效率。
-    
-    错误处理不灵活： 
-    当连接超时或失败时，这种方式的错误处理相对简单，只是获取一个连接结果的布尔值，
-    对于具体的错误原因和更细致的处理逻辑支持不够，不利于对连接问题进行深入排查和处理。
-    */
-
     esp_task_wdt_reset();
+    
+    // 注销WiFi事件处理器
+    UnregisterWifiEventHandlers();
+    
+    // 根据事件结果判断连接状态
+    bool connected = false;
+    
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "%s @StartWifiAndWaitForConnection：WiFi连接成功", GetTimeString().c_str());
+        connected = true;
+    } else if (bits & WIFI_AUTH_FAIL_BIT) {
+        ESP_LOGW(TAG, "%s @StartWifiAndWaitForConnection：WiFi认证失败，可能是密码错误", GetTimeString().c_str());
+        connected = false;
+        // 立即停止连接尝试
+        wifi_station.Stop();
+    } else if (bits & WIFI_FAIL_BIT) {
+        ESP_LOGW(TAG, "%s @StartWifiAndWaitForConnection：WiFi连接失败", GetTimeString().c_str());
+        connected = false;
+        wifi_station.Stop();
+    } else {
+        ESP_LOGW(TAG, "%s @StartWifiAndWaitForConnection：WiFi连接超时", GetTimeString().c_str());
+        connected = false;
+        wifi_station.Stop();
+    }
     
     return connected;
 }
